@@ -23,7 +23,7 @@ A plugin that consumes data from Apache Kafka topics and indexes it into NRTSear
 1. Clone the repositories:
 ```bash
 git clone https://github.com/yelp/nrtsearch.git
-git clone https://github.com/yelp/nrtsearch-ingestion-plugins.git
+git clone https://github.com/umeshdangat/nrtsearch-ingestion-plugins.git
 ```
 
 2. Build the project:
