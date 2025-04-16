@@ -1,0 +1,13 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'nrtsearch-ingestion-plugins'
+
+include 'common'
+include 'kafka-plugin'
+// Uncomment when ready to implement paimon plugin
+// include 'paimon-plugin'

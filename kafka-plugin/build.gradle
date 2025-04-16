@@ -1,0 +1,32 @@
+dependencies {
+    implementation project(':common')
+    
+    // Kafka dependencies
+    implementation libs.kafka.clients
+    implementation libs.confluent.registry
+    implementation libs.confluent.avro
+    implementation libs.avro
+    
+    // Test dependencies
+    testImplementation libs.junit
+    testImplementation libs.mockito
+    testImplementation libs.assertj
+}
+
+distributions {
+    main {
+        contents {
+            from(jar)
+            from(this.project.configurations.runtimeClasspath)
+            from('src/main/plugin-metadata/plugin-metadata.yaml') {
+                expand(
+                    classname: 'com.yelp.nrtsearch.plugins.ingestion.kafka.KafkaIngestPlugin',
+                    name: "nrtsearch-kafka-ingestion",
+                    version: project.version,
+                    description: 'Kafka ingestion plugin for nrtsearch',
+                    server_version: "1.+"
+                )
+            }
+        }
+    }
+}

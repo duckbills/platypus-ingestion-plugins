@@ -1,0 +1,19 @@
+dependencies {
+    // API dependencies (exposed to consumers)
+    api libs.slf4j.api
+    api libs.guava
+    
+    // NRTSearch dependencies
+    compileOnly "com.yelp.nrtsearch:server:1.+"
+    
+    // Test dependencies
+    testImplementation "com.yelp.nrtsearch:server:1.+"
+    testImplementation "com.yelp.nrtsearch:server:1.+:tests"
+    testImplementation libs.junit
+    testImplementation libs.mockito
+    testImplementation libs.assertj
+}
+
+test {
+    useJUnitPlatform()
+}

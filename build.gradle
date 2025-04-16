@@ -1,0 +1,74 @@
+plugins {
+    id 'java-library'
+    id 'idea'
+    id 'com.diffplug.spotless' version '6.25.0'
+}
+
+allprojects {
+    group = 'com.yelp.nrtsearch.plugins.ingestion'
+    version = '0.0.1'
+
+    repositories {
+        mavenCentral()
+        maven {
+            url "https://packages.confluent.io/maven/"
+        }
+    }
+}
+
+subprojects {
+    apply plugin: 'java-library'
+    apply plugin: 'distribution'
+    apply plugin: 'com.diffplug.spotless'
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+
+    sourceSets {
+        main {
+            java {
+                srcDirs = ['src/main/java']
+            }
+            resources {
+                srcDirs = ['src/main/resources']
+            }
+        }
+        test {
+            java {
+                srcDirs = ['src/test/java']
+            }
+            resources {
+                srcDirs = ['src/test/resources']
+            }
+        }
+    }
+
+    dependencies {
+        compileOnly "com.yelp.nrtsearch:server:1.+"
+        testImplementation "com.yelp.nrtsearch:server:1.+"
+        testImplementation "com.yelp.nrtsearch:server:1.+:tests"
+        testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+        testImplementation 'org.mockito:mockito-core:5.11.0'
+        testImplementation 'org.assertj:assertj-core:3.25.3'
+    }
+
+    test {
+        useJUnitPlatform()
+        testLogging {
+            events "passed", "skipped", "failed"
+        }
+    }
+
+    spotless {
+        java {
+            importOrder()
+            removeUnusedImports()
+            trimTrailingWhitespace()
+            endWithNewline()
+            googleJavaFormat()
+        }
+    }
+}
