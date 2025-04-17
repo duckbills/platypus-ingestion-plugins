@@ -1,16 +1,48 @@
 dependencies {
-    implementation project(':common')
+    // NrtSearch dependencies
+    compileOnly files("${new File(project.projectDir, '../../nrtsearch/build/libs/nrtsearch-1.0.0-beta.10.jar')}")
+    testImplementation files("${new File(project.projectDir, '../../nrtsearch/build/libs/nrtsearch-1.0.0-beta.10.jar')}")
     
     // Kafka dependencies
-    implementation libs.kafka.clients
-    implementation libs.confluent.registry
-    implementation libs.confluent.avro
-    implementation libs.avro
+    implementation 'org.apache.kafka:kafka-clients:3.6.0'
+    
+    // Confluent Schema Registry dependencies
+    implementation 'io.confluent:kafka-schema-registry-client:7.5.1'
+    implementation 'io.confluent:kafka-avro-serializer:7.5.1'
+    implementation 'org.apache.avro:avro:1.11.3'
+    
+    // Protobuf dependencies
+    implementation 'com.google.protobuf:protobuf-java:3.21.7'
+    implementation 'com.google.protobuf:protobuf-java-util:3.21.7'
+    
+    // Jackson for JSON serialization
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
+    
+    // Logging dependencies
+    implementation 'org.slf4j:slf4j-api:1.7.36'
     
     // Test dependencies
-    testImplementation libs.junit
-    testImplementation libs.mockito
-    testImplementation libs.assertj
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-core:5.7.0'
+    testImplementation 'org.assertj:assertj-core:3.24.2'
+}
+
+// Add Confluent Maven repository
+repositories {
+    mavenCentral()
+    maven {
+        url "https://packages.confluent.io/maven/"
+    }
+}
+
+// Ensure test task is properly configured
+test {
+    useJUnit()
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showStandardStreams = true
+    }
 }
 
 distributions {
