@@ -15,7 +15,7 @@
  */
 package com.yelp.nrtsearch.plugins.ingestion.kafka;
 
-import com.yelp.nrtsearch.server.config.YamlConfigReader;
+import java.util.Map;
 
 /**
  * Configuration for Kafka ingestion.
@@ -23,24 +23,28 @@ import com.yelp.nrtsearch.server.config.YamlConfigReader;
  * <p>Expected YAML configuration structure:
  *
  * <pre>
- * ingestion:
- *   kafka:
- *     bootstrapServers: "localhost:9092"  # Kafka bootstrap servers (default: localhost:9092)
- *     groupId: "nrtsearch-kafka-consumer"  # Kafka consumer group ID (default: nrtsearch-kafka-consumer)
- *     topic: "my-topic"  # Kafka topic to consume (required)
- *     autoCommitEnabled: false  # Whether to enable auto-commit (default: false)
- *     autoOffsetReset: "earliest"  # Auto offset reset strategy (default: earliest)
- *     schemaRegistryUrl: "http://localhost:8081"  # Confluent Schema Registry URL (optional)
- *     indexName: "my-index"  # NrtSearch index name (required)
- *     autoRegisterFields: true  # Automatically register fields from Avro schema (default: false)
+ * pluginConfigs:
+ *   ingestion:
+ *     kafka:
+ *       bootstrapServers: "localhost:9092"  # Kafka bootstrap servers (default: localhost:9092)
+ *       groupId: "nrtsearch-kafka-consumer"  # Kafka consumer group ID (default: nrtsearch-kafka-consumer)
+ *       topic: "my-topic"  # Kafka topic to consume (required)
+ *       autoCommitEnabled: false  # Whether to enable auto-commit (default: false)
+ *       autoOffsetReset: "earliest"  # Auto offset reset strategy (default: earliest)
+ *       schemaRegistryUrl: "http://localhost:8081"  # Confluent Schema Registry URL (optional)
+ *       indexName: "my-index"  # NrtSearch index name (required)
+ *       autoRegisterFields: true  # Automatically register fields from Avro schema (default: false)
  * </pre>
  */
 public class IngestionConfig {
+  private static final String CONFIG_PREFIX = "pluginConfigs.ingestion.kafka";
+
   // Default values
   private static final String DEFAULT_BOOTSTRAP_SERVERS = "localhost:9092";
   private static final String DEFAULT_CONSUMER_GROUP_ID = "nrtsearch-kafka-consumer";
   private static final boolean DEFAULT_AUTO_COMMIT_ENABLED = false;
   private static final String DEFAULT_AUTO_OFFSET_RESET = "earliest";
+  private static final int DEFAULT_BATCH_SIZE = 1000;
 
   private final String bootstrapServers;
   private final String consumerGroupId;
@@ -50,32 +54,33 @@ public class IngestionConfig {
   private final String schemaRegistryUrl;
   private final String indexName;
   private final boolean autoRegisterFields;
+  private final String batchSize;
 
   /**
    * Create a configuration object using values from the YAML configuration.
    *
-   * @param configReader The YamlConfigReader to read configuration values from
+   * @param Map: "pluginsConfig.ingestion.kafka" from NrtSearchConfig
+   * @throws IllegalStateException if the plugins.ingestion section or kafka config is not present
    */
-  public IngestionConfig(YamlConfigReader configReader) {
+  @SuppressWarnings("unchecked")
+  public IngestionConfig(Map<String, Object> configMap) {
     this.bootstrapServers =
-        configReader.getString("ingestion.kafka.bootstrapServers", DEFAULT_BOOTSTRAP_SERVERS);
-
-    this.consumerGroupId =
-        configReader.getString("ingestion.kafka.groupId", DEFAULT_CONSUMER_GROUP_ID);
-
-    this.topic = configReader.getString("ingestion.kafka.topic", null);
-
+        (String) configMap.getOrDefault("bootstrapServers", DEFAULT_BOOTSTRAP_SERVERS);
+    this.consumerGroupId = (String) configMap.getOrDefault("groupId", DEFAULT_CONSUMER_GROUP_ID);
+    this.topic = (String) configMap.get("topic");
     this.autoCommitEnabled =
-        configReader.getBoolean("ingestion.kafka.autoCommitEnabled", DEFAULT_AUTO_COMMIT_ENABLED);
-
+        Boolean.parseBoolean(
+            String.valueOf(
+                configMap.getOrDefault("autoCommitEnabled", DEFAULT_AUTO_COMMIT_ENABLED)));
     this.autoOffsetReset =
-        configReader.getString("ingestion.kafka.autoOffsetReset", DEFAULT_AUTO_OFFSET_RESET);
-
-    this.schemaRegistryUrl = configReader.getString("ingestion.kafka.schemaRegistryUrl", null);
-
-    this.indexName = configReader.getString("ingestion.kafka.indexName", null);
-
-    this.autoRegisterFields = configReader.getBoolean("ingestion.kafka.autoRegisterFields", false);
+        (String) configMap.getOrDefault("autoOffsetReset", DEFAULT_AUTO_OFFSET_RESET);
+    this.schemaRegistryUrl = (String) configMap.get("schemaRegistryUrl");
+    this.indexName = (String) configMap.get("indexName");
+    this.autoRegisterFields =
+        Boolean.parseBoolean(String.valueOf(configMap.getOrDefault("autoRegisterFields", false)));
+    this.batchSize =
+        (String) configMap.getOrDefault("batchSize", String.valueOf(DEFAULT_BATCH_SIZE));
+    validate();
   }
 
   /**
@@ -98,7 +103,8 @@ public class IngestionConfig {
       String autoOffsetReset,
       String schemaRegistryUrl,
       String indexName,
-      boolean autoRegisterFields) {
+      boolean autoRegisterFields,
+      String batchSize) {
     this.bootstrapServers = bootstrapServers;
     this.consumerGroupId = consumerGroupId;
     this.topic = topic;
@@ -107,6 +113,10 @@ public class IngestionConfig {
     this.schemaRegistryUrl = schemaRegistryUrl;
     this.indexName = indexName;
     this.autoRegisterFields = autoRegisterFields;
+    this.batchSize = batchSize;
+
+    // Validate config for constructor usage as well
+    validate();
   }
 
   /**
@@ -121,6 +131,10 @@ public class IngestionConfig {
 
     if (indexName == null || indexName.isEmpty()) {
       throw new IllegalStateException("Index name is required");
+    }
+
+    if (bootstrapServers == null || bootstrapServers.isEmpty()) {
+      throw new IllegalStateException("Bootstrap servers are required");
     }
   }
 
@@ -152,7 +166,42 @@ public class IngestionConfig {
     return indexName;
   }
 
+  public int getBatchSize() {
+    return Integer.parseInt(batchSize);
+  }
+
   public boolean isAutoRegisterFields() {
     return autoRegisterFields;
+  }
+
+  @Override
+  public String toString() {
+    return "IngestionConfig{"
+        + "bootstrapServers='"
+        + bootstrapServers
+        + '\''
+        + ", consumerGroupId='"
+        + consumerGroupId
+        + '\''
+        + ", topic='"
+        + topic
+        + '\''
+        + ", autoCommitEnabled="
+        + autoCommitEnabled
+        + ", autoOffsetReset='"
+        + autoOffsetReset
+        + '\''
+        + ", schemaRegistryUrl='"
+        + schemaRegistryUrl
+        + '\''
+        + ", indexName='"
+        + indexName
+        + '\''
+        + ", autoRegisterFields="
+        + autoRegisterFields
+        + ", batchSize='"
+        + batchSize
+        + '\''
+        + '}';
   }
 }

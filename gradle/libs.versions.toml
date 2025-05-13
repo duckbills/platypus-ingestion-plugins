@@ -1,25 +1,52 @@
 [versions]
-kafka = "3.5.1"
+kafka = "3.6.0"
 confluent = "7.5.1"
 avro = "1.11.3"
-slf4j = "2.0.12"
-junit = "5.10.2"
-mockito = "5.11.0"
-assertj = "3.25.3"
-guava = "33.0.0-jre"
+protobuf = "3.25.3"
+grpc = "1.66.0"
+junit = "5.10.0"
+mockito = "5.14.2"
+assertj = "3.26.3"
+slf4j = "2.0.16"
 spotless = "6.25.0"
+sphinx = "2.10.1"
+awaitility = "4.3.0"
+testcontainers = "1.19.3"
+grpc-netty = "1.56.0"
 
 [libraries]
+# Kafka & Confluent
 kafka-clients = { module = "org.apache.kafka:kafka-clients", version.ref = "kafka" }
-confluent-registry = { module = "io.confluent:kafka-schema-registry-client", version.ref = "confluent" }
-confluent-avro = { module = "io.confluent:kafka-avro-serializer", version.ref = "confluent" }
+kafka-schema-registry-client = { module = "io.confluent:kafka-schema-registry-client", version.ref = "confluent" }
+kafka-avro-serializer = { module = "io.confluent:kafka-avro-serializer", version.ref = "confluent" }
 avro = { module = "org.apache.avro:avro", version.ref = "avro" }
-slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
-guava = { module = "com.google.guava:guava", version.ref = "guava" }
+# Testcontainers
+testcontainers-core = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
+testcontainers-kafka = { module = "org.testcontainers:kafka", version.ref = "testcontainers" }
 
-junit = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
-mockito = { module = "org.mockito:mockito-core", version.ref = "mockito" }
-assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+# GRPC Netty (needed for in-process and external GRPC server clients)
+grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded", version.ref = "grpc-netty" }
+
+# Protobuf
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+protobuf-java-util = { module = "com.google.protobuf:protobuf-java-util", version.ref = "protobuf" }
+
+# gRPC (for testing)
+grpc-testing = { module = "io.grpc:grpc-testing", version.ref = "grpc" }
+grpc-inprocess = { module = "io.grpc:grpc-inprocess", version.ref = "grpc" }
+
+# Logging
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+
+# Testing
+awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+
+# Optional: Nrtsearch (assumes published to Maven local or remote)
+nrtsearch-server = { module = "com.yelp.nrtsearch:server", version = "1.0.0-beta.14" }
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
+sphinx = { id = "kr.motd.sphinx", version.ref = "sphinx" }

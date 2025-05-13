@@ -1,191 +1,138 @@
-/*
- * Copyright 2024 Yelp Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.yelp.nrtsearch.plugins.ingestion.kafka;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.*;
 
-import com.yelp.nrtsearch.server.config.YamlConfigReader;
-import org.junit.Test;
+import java.util.HashMap;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
 
 public class IngestionConfigTest {
 
   @Test
-  public void testDefaultValues() {
-    // Mock the YamlConfigReader
-    YamlConfigReader mockReader = mock(YamlConfigReader.class);
+  public void testValidDefaults() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("bootstrapServers", "localhost:9092");
+    config.put("groupId", "nrtsearch-kafka-consumer");
+    config.put("autoCommitEnabled", false);
+    config.put("autoOffsetReset", "earliest");
+    config.put("autoRegisterFields", false);
+    config.put("topic", "test-topic"); // required
+    config.put("indexName", "test-index"); // required
+    config.put("schemaRegistryUrl", null);
+    config.put("batchSize", "1000");
 
-    // Set up the mock to return default values for all non-required configs
-    when(mockReader.getString("ingestion.kafka.bootstrapServers", "localhost:9092"))
-        .thenReturn("localhost:9092");
-    when(mockReader.getString("ingestion.kafka.groupId", "nrtsearch-kafka-consumer"))
-        .thenReturn("nrtsearch-kafka-consumer");
-    when(mockReader.getBoolean("ingestion.kafka.autoCommitEnabled", false)).thenReturn(false);
-    when(mockReader.getString("ingestion.kafka.autoOffsetReset", "earliest"))
-        .thenReturn("earliest");
-    when(mockReader.getBoolean("ingestion.kafka.autoRegisterFields", false)).thenReturn(false);
+    IngestionConfig ingestionConfig = new IngestionConfig(config);
 
-    // Set up required config values
-    when(mockReader.getString("ingestion.kafka.topic", null)).thenReturn("test-topic");
-    when(mockReader.getString("ingestion.kafka.indexName", null)).thenReturn("test-index");
-    when(mockReader.getString("ingestion.kafka.schemaRegistryUrl", null)).thenReturn(null);
-
-    // Create config from reader
-    IngestionConfig config = new IngestionConfig(mockReader);
-
-    // Verify default values
-    assertEquals("localhost:9092", config.getBootstrapServers());
-    assertEquals("nrtsearch-kafka-consumer", config.getConsumerGroupId());
-    assertEquals("test-topic", config.getTopic());
-    assertFalse(config.isAutoCommitEnabled());
-    assertEquals("earliest", config.getAutoOffsetReset());
-    assertEquals(null, config.getSchemaRegistryUrl());
-    assertEquals("test-index", config.getIndexName());
-    assertFalse(config.isAutoRegisterFields());
+    assertEquals("localhost:9092", ingestionConfig.getBootstrapServers());
+    assertEquals("nrtsearch-kafka-consumer", ingestionConfig.getConsumerGroupId());
+    assertEquals("test-topic", ingestionConfig.getTopic());
+    assertEquals("test-index", ingestionConfig.getIndexName());
+    assertEquals("earliest", ingestionConfig.getAutoOffsetReset());
+    assertFalse(ingestionConfig.isAutoCommitEnabled());
+    assertFalse(ingestionConfig.isAutoRegisterFields());
+    assertNull(ingestionConfig.getSchemaRegistryUrl());
+    assertEquals(1000, ingestionConfig.getBatchSize());
   }
 
   @Test
   public void testCustomValues() {
-    // Mock the YamlConfigReader
-    YamlConfigReader mockReader = mock(YamlConfigReader.class);
+    Map<String, Object> config = new HashMap<>();
+    config.put("bootstrapServers", "kafka1:9092,kafka2:9092");
+    config.put("groupId", "custom-consumer-group");
+    config.put("autoCommitEnabled", true);
+    config.put("autoOffsetReset", "latest");
+    config.put("autoRegisterFields", true);
+    config.put("topic", "custom-topic");
+    config.put("indexName", "custom-index");
+    config.put("schemaRegistryUrl", "http://registry:8081");
+    config.put("batchSize", "500");
 
-    // Set up the mock to return custom values for all configs
-    when(mockReader.getString("ingestion.kafka.bootstrapServers", "localhost:9092"))
-        .thenReturn("kafka1:9092,kafka2:9092");
-    when(mockReader.getString("ingestion.kafka.groupId", "nrtsearch-kafka-consumer"))
-        .thenReturn("custom-consumer-group");
-    when(mockReader.getString("ingestion.kafka.topic", null)).thenReturn("custom-topic");
-    when(mockReader.getBoolean("ingestion.kafka.autoCommitEnabled", false)).thenReturn(true);
-    when(mockReader.getString("ingestion.kafka.autoOffsetReset", "earliest")).thenReturn("latest");
-    when(mockReader.getString("ingestion.kafka.schemaRegistryUrl", null))
-        .thenReturn("http://schema-registry:8081");
-    when(mockReader.getString("ingestion.kafka.indexName", null)).thenReturn("custom-index");
-    when(mockReader.getBoolean("ingestion.kafka.autoRegisterFields", false)).thenReturn(true);
+    IngestionConfig ingestionConfig = new IngestionConfig(config);
 
-    // Create config from reader
-    IngestionConfig config = new IngestionConfig(mockReader);
-
-    // Verify custom values
-    assertEquals("kafka1:9092,kafka2:9092", config.getBootstrapServers());
-    assertEquals("custom-consumer-group", config.getConsumerGroupId());
-    assertEquals("custom-topic", config.getTopic());
-    assertTrue(config.isAutoCommitEnabled());
-    assertEquals("latest", config.getAutoOffsetReset());
-    assertEquals("http://schema-registry:8081", config.getSchemaRegistryUrl());
-    assertEquals("custom-index", config.getIndexName());
-    assertTrue(config.isAutoRegisterFields());
+    assertEquals("kafka1:9092,kafka2:9092", ingestionConfig.getBootstrapServers());
+    assertEquals("custom-consumer-group", ingestionConfig.getConsumerGroupId());
+    assertEquals("custom-topic", ingestionConfig.getTopic());
+    assertEquals("custom-index", ingestionConfig.getIndexName());
+    assertEquals("latest", ingestionConfig.getAutoOffsetReset());
+    assertTrue(ingestionConfig.isAutoCommitEnabled());
+    assertTrue(ingestionConfig.isAutoRegisterFields());
+    assertEquals("http://registry:8081", ingestionConfig.getSchemaRegistryUrl());
+    assertEquals(500, ingestionConfig.getBatchSize());
   }
 
   @Test
   public void testExplicitConstructor() {
-    // Create config with explicit values
     IngestionConfig config =
         new IngestionConfig(
-            "server1:9092,server2:9092",
-            "explicit-group",
-            "explicit-topic",
+            "broker:9092",
+            "group-A",
+            "topic-A",
             true,
             "latest",
-            "http://registry:8081",
-            "explicit-index",
-            true);
+            "http://schema-registry",
+            "index-A",
+            true,
+            "300");
 
-    // Verify values
-    assertEquals("server1:9092,server2:9092", config.getBootstrapServers());
-    assertEquals("explicit-group", config.getConsumerGroupId());
-    assertEquals("explicit-topic", config.getTopic());
+    assertEquals("broker:9092", config.getBootstrapServers());
+    assertEquals("group-A", config.getConsumerGroupId());
+    assertEquals("topic-A", config.getTopic());
     assertTrue(config.isAutoCommitEnabled());
     assertEquals("latest", config.getAutoOffsetReset());
-    assertEquals("http://registry:8081", config.getSchemaRegistryUrl());
-    assertEquals("explicit-index", config.getIndexName());
+    assertEquals("http://schema-registry", config.getSchemaRegistryUrl());
+    assertEquals("index-A", config.getIndexName());
     assertTrue(config.isAutoRegisterFields());
+    assertEquals(300, config.getBatchSize());
   }
 
-  @Test(expected = IllegalStateException.class)
-  public void testValidate_noTopic() {
-    // Create config with missing topic
-    IngestionConfig config =
-        new IngestionConfig(
-            "localhost:9092",
-            "test-group",
-            null, // missing topic
-            false,
-            "earliest",
-            null,
-            "test-index",
-            false);
-
-    // Should throw IllegalStateException
-    config.validate();
+  @Test
+  public void testMissingTopicThrows() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("indexName", "test-index");
+    IllegalStateException ex =
+        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
+    assertEquals("Kafka topic is required", ex.getMessage());
   }
 
-  @Test(expected = IllegalStateException.class)
-  public void testValidate_emptyTopic() {
-    // Create config with empty topic
-    IngestionConfig config =
-        new IngestionConfig(
-            "localhost:9092",
-            "test-group",
-            "", // empty topic
-            false,
-            "earliest",
-            null,
-            "test-index",
-            false);
-
-    // Should throw IllegalStateException
-    config.validate();
+  @Test
+  public void testEmptyTopicThrows() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("topic", "");
+    config.put("indexName", "test-index");
+    IllegalStateException ex =
+        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
+    assertEquals("Kafka topic is required", ex.getMessage());
   }
 
-  @Test(expected = IllegalStateException.class)
-  public void testValidate_noIndexName() {
-    // Create config with missing index name
-    IngestionConfig config =
-        new IngestionConfig(
-            "localhost:9092",
-            "test-group",
-            "test-topic",
-            false,
-            "earliest",
-            null,
-            null, // missing index name
-            false);
+  @Test
+  public void testMissingIndexNameThrows() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("topic", "test-topic");
 
-    // Should throw IllegalStateException
-    config.validate();
+    IllegalStateException ex =
+        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
+    assertEquals("Index name is required", ex.getMessage());
   }
 
-  @Test(expected = IllegalStateException.class)
-  public void testValidate_emptyIndexName() {
-    // Create config with empty index name
-    IngestionConfig config =
-        new IngestionConfig(
-            "localhost:9092",
-            "test-group",
-            "test-topic",
-            false,
-            "earliest",
-            null,
-            "", // empty index name
-            false);
+  @Test
+  public void testEmptyIndexNameThrows() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("topic", "test-topic");
+    config.put("indexName", "");
 
-    // Should throw IllegalStateException
-    config.validate();
+    IllegalStateException ex =
+        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
+    assertEquals("Index name is required", ex.getMessage());
+  }
+
+  @Test
+  public void testMissingBootstrapServersThrows() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("topic", "test-topic");
+    config.put("indexName", "test-index");
+    config.put("bootstrapServers", ""); // invalid empty
+    IllegalStateException ex =
+        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
+    assertEquals("Bootstrap servers are required", ex.getMessage());
   }
 }

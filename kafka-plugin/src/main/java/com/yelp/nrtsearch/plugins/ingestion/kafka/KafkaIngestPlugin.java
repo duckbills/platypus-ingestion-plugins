@@ -16,39 +16,39 @@
 package com.yelp.nrtsearch.plugins.ingestion.kafka;
 
 import com.yelp.nrtsearch.server.config.NrtsearchConfig;
-import com.yelp.nrtsearch.server.grpc.FieldDefRequest;
-import com.yelp.nrtsearch.server.plugins.Plugin;
-import java.io.IOException;
-import java.util.Collections;
-import java.util.Properties;
+import com.yelp.nrtsearch.server.index.IndexState;
+import com.yelp.nrtsearch.server.ingestion.Ingestor;
+import com.yelp.nrtsearch.server.plugins.IngestionPlugin;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.common.serialization.StringDeserializer;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * KafkaIngestPlugin provides Kafka ingestion functionality for nrtsearch. It consumes messages from
- * a Kafka topic and processes them for indexing. It also supports automatic schema conversion from
+ * a Kafka topic and processes them for indexing. TODO: support automatic schema conversion from
  * Avro schemas in Confluent Schema Registry.
  *
  * <p>See {@link IngestionConfig} for configuration options
  */
-public class KafkaIngestPlugin extends Plugin {
+public class KafkaIngestPlugin implements IngestionPlugin {
   private static final Logger LOGGER = LoggerFactory.getLogger(KafkaIngestPlugin.class);
-  private static final int DEFAULT_THREAD_POOL_SIZE = 1;
+  private static final int DEFAULT_NUM_PARTITIONS = 1;
+  private static final AtomicInteger THREAD_ID = new AtomicInteger();
+  private final int numPartitions =
+      DEFAULT_NUM_PARTITIONS; // TODO: replace with number of kafka partitions
 
   private final NrtsearchConfig nrtsearchConfig;
   private final IngestionConfig ingestionConfig;
-  private final ExecutorService executorService;
-  private volatile boolean running = false;
-  private KafkaConsumer<String, String> consumer;
+
+  private static final int DEFAULT_BATCH_SIZE = 1000;
 
   // Services
-  private SchemaConversionService schemaConversionService;
+  private AvroToAddDocumentConverter documentConverter;
+  private IndexState indexState;
+  private ExecutorService executorService;
 
   /**
    * Constructor for the KafkaIngestPlugin.
@@ -57,17 +57,17 @@ public class KafkaIngestPlugin extends Plugin {
    */
   public KafkaIngestPlugin(NrtsearchConfig config) {
     this.nrtsearchConfig = config;
-    this.executorService = Executors.newFixedThreadPool(DEFAULT_THREAD_POOL_SIZE);
+    this.ingestionConfig = getIngestionConfig(config);
+  }
 
-    // Create IngestionConfig using YamlConfigReader from NrtsearchConfig
-    this.ingestionConfig = new IngestionConfig(config.getConfigReader());
-
-    // Initialize schema conversion service if schema registry URL is provided
-    if (ingestionConfig.getSchemaRegistryUrl() != null
-        && !ingestionConfig.getSchemaRegistryUrl().isEmpty()) {
-      this.schemaConversionService =
-          new SchemaConversionService(ingestionConfig.getSchemaRegistryUrl());
+  private IngestionConfig getIngestionConfig(NrtsearchConfig config) {
+    // Create IngestionConfig from NrtsearchConfig
+    Map<String, Map<String, Object>> ingestionConfigs = config.getIngestionPluginConfigs();
+    Map<String, Object> kafkaConfig = ingestionConfigs.get("kafka");
+    if (kafkaConfig == null) {
+      throw new IllegalStateException("Missing config for 'kafka' ingestion plugin");
     }
+    return new IngestionConfig(kafkaConfig);
   }
 
   /**
@@ -79,130 +79,24 @@ public class KafkaIngestPlugin extends Plugin {
     return ingestionConfig;
   }
 
-  /** Start the Kafka ingestion process. */
-  public void startIngestion() {
-    if (isRunning()) {
-      LOGGER.warn("Kafka ingestion is already running");
-      return;
-    }
-
-    // Validate required configuration
-    ingestionConfig.validate();
-
-    // Auto-register fields if enabled and schema registry is configured
-    if (ingestionConfig.isAutoRegisterFields() && schemaConversionService != null) {
-      try {
-        registerFieldsFromAvroSchema();
-      } catch (Exception e) {
-        LOGGER.error("Failed to auto-register fields from Avro schema", e);
-        // Continue with ingestion even if field registration fails
-      }
-    }
-
-    Properties props = new Properties();
-    props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, ingestionConfig.getBootstrapServers());
-    props.put(ConsumerConfig.GROUP_ID_CONFIG, ingestionConfig.getConsumerGroupId());
-    props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-    props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-    props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, ingestionConfig.getAutoOffsetReset());
-    props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, ingestionConfig.isAutoCommitEnabled());
-
-    consumer = new KafkaConsumer<>(props);
-    consumer.subscribe(Collections.singletonList(ingestionConfig.getTopic()));
-    setRunning(true);
-
-    // Start consumer in a separate thread
-    executorService.submit(this::consumeMessages);
-    LOGGER.info(
-        "Started Kafka ingestion for topic: {}, indexing to: {}",
-        ingestionConfig.getTopic(),
-        ingestionConfig.getIndexName());
-  }
-
-  /** Consume messages from Kafka and process them. */
-  private void consumeMessages() {
-    // Implementation of consumer loop here
-    // TODO: Implement actual consumer loop and document indexing
-  }
-
-  /**
-   * Register fields from Avro schema in the Schema Registry. We'll use the API but delegate the
-   * actual registration to a controller/manager class that has access to the IndexState.
-   */
-  private void registerFieldsFromAvroSchema() throws IOException {
-    if (schemaConversionService == null) {
-      LOGGER.warn("Cannot register fields: Schema conversion service is not configured");
-      return;
-    }
-
-    LOGGER.info(
-        "Auto-registering fields from Avro schema for topic: {}", ingestionConfig.getTopic());
-
-    // Convert Avro schema to FieldDefRequest
-    FieldDefRequest fieldDefRequest =
-        schemaConversionService.generateFieldDefRequest(
-            ingestionConfig.getIndexName(), ingestionConfig.getTopic(), false);
-
-    // We can't directly access the IndexState from the plugin, so we'll log the field definitions
-    // and rely on an external mechanism to register them
-    LOGGER.info(
-        "Generated field definitions for index {}: {}",
-        ingestionConfig.getIndexName(),
-        fieldDefRequest.getFieldList());
-
-    // In a real implementation, this would be done by a controller/manager that has access to the
-    // IndexState
-
-    LOGGER.info("Successfully processed fields from Avro schema");
-  }
-
-  /** Stop the Kafka ingestion process. */
-  public void stopIngestion() {
-    if (!isRunning()) {
-      LOGGER.warn("Kafka ingestion is not running");
-      return;
-    }
-
-    setRunning(false);
-    if (consumer != null) {
-      consumer.close();
-      consumer = null;
-    }
-
-    // Wait for executor to finish
-    executorService.shutdown();
-    try {
-      if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
-        executorService.shutdownNow();
-      }
-    } catch (InterruptedException e) {
-      executorService.shutdownNow();
-      Thread.currentThread().interrupt();
-    }
-
-    LOGGER.info("Stopped Kafka ingestion");
-  }
-
-  /**
-   * Check if the ingestion process is currently running.
-   *
-   * @return true if ingestion is running, false otherwise
-   */
-  public boolean isRunning() {
-    return running;
-  }
-
-  /**
-   * Set the running state of the ingestion process.
-   *
-   * @param running the new running state
-   */
-  protected void setRunning(boolean running) {
-    this.running = running;
+  @Override
+  public Ingestor getIngestor() {
+    return new KafkaIngestor(nrtsearchConfig, getIngestionExecutor(), numPartitions);
   }
 
   @Override
-  public void close() throws IOException {
-    stopIngestion();
+  public ExecutorService getIngestionExecutor() {
+    if (this.executorService == null) {
+      this.executorService =
+          Executors.newFixedThreadPool(
+              numPartitions,
+              r -> {
+                Thread t =
+                    new Thread(r, "kafka-ingest-partition-consumer-" + THREAD_ID.getAndIncrement());
+                t.setDaemon(true);
+                return t;
+              });
+    }
+    return executorService;
   }
 }

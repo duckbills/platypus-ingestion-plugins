@@ -1,43 +1,49 @@
+// Plugin configurations are inherited from root project
+
+
 dependencies {
-    // NrtSearch dependencies
-    compileOnly files("${new File(project.projectDir, '../../nrtsearch/build/libs/nrtsearch-1.0.0-beta.10.jar')}")
-    testImplementation files("${new File(project.projectDir, '../../nrtsearch/build/libs/nrtsearch-1.0.0-beta.10.jar')}")
-    
+    // NRTSearch server dependencies
+    implementation libs.nrtsearch.server
+
     // Kafka dependencies
-    implementation 'org.apache.kafka:kafka-clients:3.6.0'
+    implementation libs.kafka.clients
+    implementation libs.kafka.schema.registry.client
+    implementation libs.kafka.avro.serializer
+    implementation libs.avro
     
-    // Confluent Schema Registry dependencies
-    implementation 'io.confluent:kafka-schema-registry-client:7.5.1'
-    implementation 'io.confluent:kafka-avro-serializer:7.5.1'
-    implementation 'org.apache.avro:avro:1.11.3'
+    // Logging
+    implementation libs.slf4j.api
     
-    // Protobuf dependencies
-    implementation 'com.google.protobuf:protobuf-java:3.21.7'
-    implementation 'com.google.protobuf:protobuf-java-util:3.21.7'
-    
-    // Jackson for JSON serialization
-    implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.2'
-    
-    // Logging dependencies
-    implementation 'org.slf4j:slf4j-api:1.7.36'
-    
-    // Test dependencies
-    testImplementation 'junit:junit:4.13.2'
-    testImplementation 'org.mockito:mockito-core:5.7.0'
-    testImplementation 'org.assertj:assertj-core:3.24.2'
+    // Testing
+    testImplementation("${libs.nrtsearch.server.get()}:tests")
+    testImplementation libs.grpc.testing
+    testImplementation libs.grpc.inprocess
+    testImplementation libs.junit.jupiter
+    // --- Testcontainers for Kafka and Schema Registry ---
+    testImplementation libs.testcontainers.core
+    testImplementation libs.testcontainers.kafka
+
+    // --- Needed for gRPC client and full NrtSearch tests ---
+    testImplementation libs.grpc.netty.shaded
+    testImplementation libs.protobuf.java
+    testImplementation libs.awaitility
+    testImplementation libs.assertj.core
+    testImplementation libs.mockito.core
+
 }
 
-// Add Confluent Maven repository
 repositories {
     mavenCentral()
     maven {
-        url "https://packages.confluent.io/maven/"
+        url = uri("https://packages.confluent.io/maven/")
     }
+    mavenLocal()
 }
 
-// Ensure test task is properly configured
+// If you have any additional plugin-specific configurations, add them here
+
 test {
-    useJUnit()
+    useJUnitPlatform()
     testLogging {
         events "passed", "skipped", "failed"
         exceptionFormat "full"
@@ -49,14 +55,14 @@ distributions {
     main {
         contents {
             from(jar)
-            from(this.project.configurations.runtimeClasspath)
+            from(configurations.runtimeClasspath)
             from('src/main/plugin-metadata/plugin-metadata.yaml') {
                 expand(
-                    classname: 'com.yelp.nrtsearch.plugins.ingestion.kafka.KafkaIngestPlugin',
-                    name: "nrtsearch-kafka-ingestion",
-                    version: project.version,
-                    description: 'Kafka ingestion plugin for nrtsearch',
-                    server_version: "1.+"
+                        classname: 'com.yelp.nrtsearch.plugins.ingestion.kafka.KafkaIngestPlugin',
+                        name: "nrtsearch-kafka-ingestion",
+                        version: project.version,
+                        description: 'Kafka ingestion plugin for nrtsearch',
+                        server_version: "1.+"
                 )
             }
         }
