@@ -1,7 +1,8 @@
-package com.yelp.nrtsearch.plugins.ingestion.kafka;
+package com.yelp.nrtsearch.plugins.ingestion.kafka.unit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.Assert.*;
 
+import com.yelp.nrtsearch.plugins.ingestion.kafka.AvroToAddDocumentConverter;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest.MultiValuedField;
 import java.time.Instant;
@@ -15,7 +16,7 @@ import org.apache.avro.generic.GenericArray;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.util.Utf8;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 public class AvroToAddDocumentConverterTest {
 
@@ -210,8 +211,8 @@ public class AvroToAddDocumentConverterTest {
   // Helper to get single value from MultiValuedField
   private String getSingleValue(AddDocumentRequest request, String fieldName) {
     MultiValuedField mvf = request.getFieldsMap().get(fieldName);
-    assertNotNull(mvf, "Field not found: " + fieldName);
-    assertEquals(1, mvf.getValueCount(), "Expected single value for field: " + fieldName);
+    assertNotNull("Field not found: " + fieldName, mvf);
+    assertEquals("Expected single value for field: " + fieldName, 1, mvf.getValueCount());
     return mvf.getValue(0);
   }
 }

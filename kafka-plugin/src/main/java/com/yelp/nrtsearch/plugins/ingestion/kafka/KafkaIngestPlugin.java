@@ -19,6 +19,8 @@ import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.index.IndexState;
 import com.yelp.nrtsearch.server.ingestion.Ingestor;
 import com.yelp.nrtsearch.server.plugins.IngestionPlugin;
+import com.yelp.nrtsearch.server.plugins.Plugin;
+import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -33,7 +35,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>See {@link IngestionConfig} for configuration options
  */
-public class KafkaIngestPlugin implements IngestionPlugin {
+public class KafkaIngestPlugin extends Plugin implements IngestionPlugin {
   private static final Logger LOGGER = LoggerFactory.getLogger(KafkaIngestPlugin.class);
   private static final int DEFAULT_NUM_PARTITIONS = 1;
   private static final AtomicInteger THREAD_ID = new AtomicInteger();
@@ -98,5 +100,14 @@ public class KafkaIngestPlugin implements IngestionPlugin {
               });
     }
     return executorService;
+  }
+
+  @Override
+  public void close() throws IOException {
+    LOGGER.info("Closing KafkaIngestPlugin and shutting down executor service");
+    if (executorService != null && !executorService.isShutdown()) {
+      executorService.shutdown();
+    }
+    super.close();
   }
 }

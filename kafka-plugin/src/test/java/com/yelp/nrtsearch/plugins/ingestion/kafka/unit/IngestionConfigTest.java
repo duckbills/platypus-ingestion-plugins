@@ -1,10 +1,11 @@
-package com.yelp.nrtsearch.plugins.ingestion.kafka;
+package com.yelp.nrtsearch.plugins.ingestion.kafka.unit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.Assert.*;
 
+import com.yelp.nrtsearch.plugins.ingestion.kafka.IngestionConfig;
 import java.util.HashMap;
 import java.util.Map;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 public class IngestionConfigTest {
 
@@ -89,9 +90,12 @@ public class IngestionConfigTest {
   public void testMissingTopicThrows() {
     Map<String, Object> config = new HashMap<>();
     config.put("indexName", "test-index");
-    IllegalStateException ex =
-        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
-    assertEquals("Kafka topic is required", ex.getMessage());
+    try {
+      new IngestionConfig(config);
+      fail("Expected IllegalStateException");
+    } catch (IllegalStateException ex) {
+      assertEquals("Kafka topic is required", ex.getMessage());
+    }
   }
 
   @Test
@@ -99,9 +103,12 @@ public class IngestionConfigTest {
     Map<String, Object> config = new HashMap<>();
     config.put("topic", "");
     config.put("indexName", "test-index");
-    IllegalStateException ex =
-        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
-    assertEquals("Kafka topic is required", ex.getMessage());
+    try {
+      new IngestionConfig(config);
+      fail("Expected IllegalStateException");
+    } catch (IllegalStateException ex) {
+      assertEquals("Kafka topic is required", ex.getMessage());
+    }
   }
 
   @Test
@@ -109,9 +116,12 @@ public class IngestionConfigTest {
     Map<String, Object> config = new HashMap<>();
     config.put("topic", "test-topic");
 
-    IllegalStateException ex =
-        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
-    assertEquals("Index name is required", ex.getMessage());
+    try {
+      new IngestionConfig(config);
+      fail("Expected IllegalStateException");
+    } catch (IllegalStateException ex) {
+      assertEquals("Index name is required", ex.getMessage());
+    }
   }
 
   @Test
@@ -120,9 +130,12 @@ public class IngestionConfigTest {
     config.put("topic", "test-topic");
     config.put("indexName", "");
 
-    IllegalStateException ex =
-        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
-    assertEquals("Index name is required", ex.getMessage());
+    try {
+      new IngestionConfig(config);
+      fail("Expected IllegalStateException");
+    } catch (IllegalStateException ex) {
+      assertEquals("Index name is required", ex.getMessage());
+    }
   }
 
   @Test
@@ -131,8 +144,11 @@ public class IngestionConfigTest {
     config.put("topic", "test-topic");
     config.put("indexName", "test-index");
     config.put("bootstrapServers", ""); // invalid empty
-    IllegalStateException ex =
-        assertThrows(IllegalStateException.class, () -> new IngestionConfig(config));
-    assertEquals("Bootstrap servers are required", ex.getMessage());
+    try {
+      new IngestionConfig(config);
+      fail("Expected IllegalStateException");
+    } catch (IllegalStateException ex) {
+      assertEquals("Bootstrap servers are required", ex.getMessage());
+    }
   }
 }

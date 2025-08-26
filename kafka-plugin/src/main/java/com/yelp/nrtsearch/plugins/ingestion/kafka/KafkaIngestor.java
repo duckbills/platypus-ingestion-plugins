@@ -4,6 +4,8 @@ import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
 import com.yelp.nrtsearch.server.ingestion.AbstractIngestor;
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.*;
@@ -27,6 +29,14 @@ public class KafkaIngestor extends AbstractIngestor {
   private static final int MAX_POLL_RECORDS = 1000; // Ensure we don't get too many records at once
   private static final Duration POLL_TIMEOUT = Duration.ofMillis(1000);
 
+  // Retry configuration - package-private for testing
+  static final int DEFAULT_MAX_RETRIES = 3;
+  static final long DEFAULT_RETRY_DELAY_MS = 5000; // 5 seconds
+
+  // Allow overriding for tests
+  private final int maxRetries;
+  private final long retryDelayMs;
+
   private final IngestionConfig ingestionConfig;
   private final ExecutorService executorService;
   private final List<KafkaConsumer<String, Object>> consumers = new ArrayList<>();
@@ -34,10 +44,22 @@ public class KafkaIngestor extends AbstractIngestor {
   private volatile boolean running;
 
   public KafkaIngestor(NrtsearchConfig config, ExecutorService executorService, int numPartitions) {
+    this(config, executorService, numPartitions, DEFAULT_MAX_RETRIES, DEFAULT_RETRY_DELAY_MS);
+  }
+
+  // Package-private constructor for testing with custom retry parameters
+  KafkaIngestor(
+      NrtsearchConfig config,
+      ExecutorService executorService,
+      int numPartitions,
+      int maxRetries,
+      long retryDelayMs) {
     super(config);
     this.ingestionConfig = getIngestionConfig(config);
     this.executorService = executorService;
     this.numPartitions = numPartitions;
+    this.maxRetries = maxRetries;
+    this.retryDelayMs = retryDelayMs;
   }
 
   private IngestionConfig getIngestionConfig(NrtsearchConfig config) {
@@ -150,9 +172,17 @@ public class KafkaIngestor extends AbstractIngestor {
           if (records.isEmpty()) {
             // Commit if we have pending documents, even if no new messages
             if (!pendingDocuments.isEmpty()) {
-              indexAndCommitBatch(pendingDocuments);
-              consumer.commitSync();
-              pendingDocuments.clear();
+              try {
+                indexAndCommitBatch(pendingDocuments);
+                consumer.commitSync();
+                pendingDocuments.clear();
+              } catch (Exception e) {
+                LOGGER.error(
+                    "Failed to index pending documents for partition {}, will retry in next poll",
+                    partition,
+                    e);
+                // Don't clear pendingDocuments - keep them for retry
+              }
             }
             continue;
           }
@@ -170,16 +200,33 @@ public class KafkaIngestor extends AbstractIngestor {
 
             // Commit batch if we've reached the batch size
             if (pendingDocuments.size() >= batchSize) {
-              indexAndCommitBatch(pendingDocuments);
-              consumer.commitSync();
-              pendingDocuments.clear();
+              try {
+                indexAndCommitBatch(pendingDocuments);
+                consumer.commitSync();
+                pendingDocuments.clear();
+              } catch (Exception e) {
+                LOGGER.error(
+                    "Failed to index batch for partition {}, will retry in next poll",
+                    partition,
+                    e);
+                // Don't clear pendingDocuments - keep them for retry
+                break; // Exit inner loop to retry in next poll
+              }
             }
           }
           // Commit any remaining documents (smaller than batch)
           if (!pendingDocuments.isEmpty()) {
-            indexAndCommitBatch(pendingDocuments);
-            consumer.commitSync();
-            pendingDocuments.clear();
+            try {
+              indexAndCommitBatch(pendingDocuments);
+              consumer.commitSync();
+              pendingDocuments.clear();
+            } catch (Exception e) {
+              LOGGER.error(
+                  "Failed to index remaining documents for partition {}, will retry in next poll",
+                  partition,
+                  e);
+              // Don't clear pendingDocuments - keep them for retry
+            }
           }
         } catch (Exception e) {
           LOGGER.error("Error processing messages for partition {}", partition, e);
@@ -202,7 +249,42 @@ public class KafkaIngestor extends AbstractIngestor {
   }
 
   private void indexAndCommitBatch(List<AddDocumentRequest> docs) throws Exception {
-    this.addDocuments(docs, ingestionConfig.getIndexName());
-    this.commit(ingestionConfig.getIndexName());
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        this.addDocuments(docs, ingestionConfig.getIndexName());
+        this.commit(ingestionConfig.getIndexName());
+        return; // Success, exit retry loop
+
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() == Status.Code.INVALID_ARGUMENT
+            && e.getMessage().contains("does not exist, unable to add documents")) {
+
+          LOGGER.warn(
+              "Index '{}' does not exist yet, attempt {}/{}, retrying in {}ms...",
+              ingestionConfig.getIndexName(),
+              attempt,
+              maxRetries,
+              retryDelayMs);
+
+          if (attempt == maxRetries) {
+            LOGGER.error(
+                "Failed to index documents after {} attempts - index '{}' still doesn't exist",
+                maxRetries,
+                ingestionConfig.getIndexName());
+            throw e; // Re-throw after max retries
+          }
+
+          try {
+            Thread.sleep(retryDelayMs);
+          } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting to retry", ie);
+          }
+        } else {
+          // Different error, don't retry
+          throw e;
+        }
+      }
+    }
   }
 }

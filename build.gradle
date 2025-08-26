@@ -45,12 +45,13 @@ subprojects {
         implementation libs.slf4j.api
 
         // Testing dependencies
-        testImplementation libs.junit.jupiter
+        testImplementation libs.junit
+        testRuntimeOnly libs.junit.vintage.engine
         testImplementation libs.assertj.core
         testImplementation libs.mockito.core
         testImplementation libs.grpc.testing
         testImplementation libs.protobuf.java
-        testImplementation(platform("org.junit:junit-bom:${libs.versions.junit.get()}"))
+        // JUnit 4 doesn't need BOM
 
         // NRTSearch dependencies
         compileOnly libs.nrtsearch.server

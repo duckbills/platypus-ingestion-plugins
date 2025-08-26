@@ -36,7 +36,7 @@ public class AvroToAddDocumentConverter {
   private void processRecord(
       GenericRecord record, String prefix, Map<String, MultiValuedField> fieldMap) {
     for (Schema.Field field : record.getSchema().getFields()) {
-      String fieldName = prefix.isEmpty() ? field.name() : prefix + "." + field.name();
+      String fieldName = prefix.isEmpty() ? field.name() : prefix + "_" + field.name();
       Object value = record.get(field.name());
       if (value == null) {
         continue;

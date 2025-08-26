@@ -1,6 +1,4 @@
 // Plugin configurations are inherited from root project
-
-
 dependencies {
     // NRTSearch server dependencies
     implementation libs.nrtsearch.server
@@ -18,7 +16,8 @@ dependencies {
     testImplementation("${libs.nrtsearch.server.get()}:tests")
     testImplementation libs.grpc.testing
     testImplementation libs.grpc.inprocess
-    testImplementation libs.junit.jupiter
+    testImplementation libs.junit
+    testRuntimeOnly libs.junit.vintage.engine
     // --- Testcontainers for Kafka and Schema Registry ---
     testImplementation libs.testcontainers.core
     testImplementation libs.testcontainers.kafka
@@ -29,6 +28,7 @@ dependencies {
     testImplementation libs.awaitility
     testImplementation libs.assertj.core
     testImplementation libs.mockito.core
+    testImplementation libs.s3mock
 
 }
 
@@ -43,7 +43,9 @@ repositories {
 // If you have any additional plugin-specific configurations, add them here
 
 test {
+    // Use JUnit Platform with Vintage Engine for JUnit 4 compatibility
     useJUnitPlatform()
+    exclude '**/*IT.class', '**/*E2E.class'
     testLogging {
         events "passed", "skipped", "failed"
         exceptionFormat "full"
@@ -66,5 +68,86 @@ distributions {
                 )
             }
         }
+    }
+}
+
+sourceSets {
+    integration {
+        java.srcDirs = ['src/test/java']
+        compileClasspath += sourceSets.main.output + configurations.testRuntimeClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+
+    e2e {
+        java.srcDirs = ['src/test/java']
+        compileClasspath += sourceSets.main.output + configurations.testRuntimeClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+configurations {
+    integrationImplementation.extendsFrom testImplementation
+    integrationRuntimeOnly.extendsFrom testRuntimeOnly
+    e2eImplementation.extendsFrom testImplementation
+    e2eRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+task integrationTest(type: Test) {
+    description = 'Runs integration tests.'
+    group = 'verification'
+    include '**/*IT.class'
+    testClassesDirs = sourceSets.integration.output.classesDirs
+    classpath = sourceSets.integration.runtimeClasspath
+    // Use JUnit Platform with Vintage Engine for JUnit 4 compatibility
+    useJUnitPlatform()
+}
+
+task e2eTest(type: Test) {
+    description = 'Runs end-to-end tests.'
+    group = 'verification'
+    include '**/*E2ETest.class'
+    testClassesDirs = sourceSets.e2e.output.classesDirs
+    classpath = sourceSets.e2e.runtimeClasspath
+    // Use JUnit Platform with Vintage Engine for JUnit 4 compatibility
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showStandardStreams = true
+    }
+    
+    doFirst {
+        // Dynamically discover Docker socket path for Testcontainers
+        def dockerPaths = [
+            '/var/run/docker.sock',           // Standard Docker Desktop/Linux
+            System.getProperty('user.home') + '/.rd/docker.sock',  // Rancher Desktop
+            System.getProperty('user.home') + '/.docker/run/docker.sock',  // Docker Desktop user mode
+            '/run/user/' + System.getProperty('user.name') + '/docker.sock'  // Rootless Docker
+        ]
+        
+        def foundDockerPath = null
+        for (String path : dockerPaths) {
+            if (new File(path).exists()) {
+                foundDockerPath = path
+                logger.info("Found Docker socket at: ${path}")
+                break
+            }
+        }
+        
+        if (foundDockerPath != null) {
+            // Set Testcontainers Docker socket environment variables for this test only
+            systemProperty 'testcontainers.dockersocket.path', foundDockerPath
+            environment 'TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE', foundDockerPath
+            environment 'DOCKER_HOST', "unix://${foundDockerPath}"
+            logger.info("Configured Testcontainers to use Docker socket: ${foundDockerPath}")
+        } else {
+            logger.warn("No Docker socket found in standard locations. Testcontainers will use default discovery.")
+            logger.warn("Checked paths: ${dockerPaths}")
+        }
+        
+        // Disable Ryuk for Rancher Desktop compatibility (resource cleanup not essential for tests)
+        systemProperty 'testcontainers.ryuk.disabled', 'true'
+        environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+        logger.info("Disabled Testcontainers Ryuk for better compatibility")
     }
 }

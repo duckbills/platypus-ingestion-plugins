@@ -3,25 +3,26 @@
  *
  * Licensed under the Apache License, Version 2.0
  */
-package com.yelp.nrtsearch.plugins.ingestion.kafka;
+package com.yelp.nrtsearch.plugins.ingestion.kafka.unit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
+import com.yelp.nrtsearch.plugins.ingestion.kafka.KafkaIngestor;
 import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
 public class KafkaIngestorTest {
   private KafkaIngestor ingestor;
   private ExecutorService executorService;
   private NrtsearchConfig mockConfig;
 
-  @BeforeEach
+  @Before
   public void setUp() {
     executorService = Executors.newSingleThreadExecutor();
 
@@ -59,12 +60,11 @@ public class KafkaIngestorTest {
   public void testInvalidKafkaConfigThrows() {
     NrtsearchConfig badConfig = mock(NrtsearchConfig.class);
     when(badConfig.getIngestionPluginConfigs()).thenReturn(Collections.emptyMap());
-    Exception ex =
-        assertThrows(
-            IllegalStateException.class,
-            () -> {
-              new KafkaIngestor(badConfig, executorService, 1);
-            });
-    assertTrue(ex.getMessage().contains("No kafka plugin config"));
+    try {
+      new KafkaIngestor(badConfig, executorService, 1);
+      fail("Expected IllegalStateException to be thrown");
+    } catch (IllegalStateException ex) {
+      assertTrue(ex.getMessage().contains("No kafka plugin config"));
+    }
   }
 }

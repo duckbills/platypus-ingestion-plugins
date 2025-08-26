@@ -1,15 +1,18 @@
-package com.yelp.nrtsearch.plugins.ingestion.kafka;
+package com.yelp.nrtsearch.plugins.ingestion.kafka.unit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
+import com.yelp.nrtsearch.plugins.ingestion.kafka.IngestionConfig;
+import com.yelp.nrtsearch.plugins.ingestion.kafka.KafkaIngestPlugin;
+import com.yelp.nrtsearch.plugins.ingestion.kafka.KafkaIngestor;
 import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.ingestion.Ingestor;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -20,7 +23,7 @@ public class KafkaIngestPluginTest {
   private Map<String, Object> kafkaConfig;
   private Map<String, Map<String, Object>> pluginConfigs;
 
-  @BeforeEach
+  @Before
   public void setUp() {
     MockitoAnnotations.openMocks(this);
 
@@ -52,7 +55,12 @@ public class KafkaIngestPluginTest {
   @Test
   public void testMissingKafkaConfigThrows() {
     pluginConfigs.remove("kafka");
-    assertThrows(IllegalStateException.class, () -> new KafkaIngestPlugin(mockConfig));
+    try {
+      new KafkaIngestPlugin(mockConfig);
+      fail("Expected IllegalStateException to be thrown");
+    } catch (IllegalStateException ex) {
+      // Expected exception
+    }
   }
 
   @Test
