@@ -45,7 +45,7 @@ repositories {
 test {
     // Use JUnit Platform with Vintage Engine for JUnit 4 compatibility
     useJUnitPlatform()
-    exclude '**/*IT.class', '**/*E2E.class'
+    exclude '**/*ITTest.class', '**/*E2ETest.class'
     testLogging {
         events "passed", "skipped", "failed"
         exceptionFormat "full"
@@ -90,16 +90,6 @@ configurations {
     integrationRuntimeOnly.extendsFrom testRuntimeOnly
     e2eImplementation.extendsFrom testImplementation
     e2eRuntimeOnly.extendsFrom testRuntimeOnly
-}
-
-task integrationTest(type: Test) {
-    description = 'Runs integration tests.'
-    group = 'verification'
-    include '**/*IT.class'
-    testClassesDirs = sourceSets.integration.output.classesDirs
-    classpath = sourceSets.integration.runtimeClasspath
-    // Use JUnit Platform with Vintage Engine for JUnit 4 compatibility
-    useJUnitPlatform()
 }
 
 task e2eTest(type: Test) {

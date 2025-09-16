@@ -1,0 +1,103 @@
+// Plugin configurations are inherited from root project
+dependencies {
+    // NRTSearch server dependencies
+    implementation libs.nrtsearch.server
+
+    // Apache Paimon dependencies - using latest stable 1.2.0
+    implementation 'org.apache.paimon:paimon-core:1.2.0'
+    implementation 'org.apache.paimon:paimon-common:1.2.0'
+    implementation 'org.apache.paimon:paimon-format:1.2.0'
+    
+    // Hadoop dependencies for Paimon
+    implementation 'org.apache.hadoop:hadoop-client-api:3.3.6'
+    implementation 'org.apache.hadoop:hadoop-client-runtime:3.3.6'
+    
+    // Logging
+    implementation libs.slf4j.api
+    
+    // Testing
+    testImplementation("${libs.nrtsearch.server.get()}:tests")
+    testImplementation libs.grpc.testing
+    testImplementation libs.grpc.inprocess
+    testImplementation libs.junit
+    testRuntimeOnly libs.junit.vintage.engine
+    
+    // --- Needed for gRPC client and full NrtSearch tests ---
+    testImplementation libs.grpc.netty.shaded
+    testImplementation libs.protobuf.java
+    testImplementation libs.awaitility
+    testImplementation libs.assertj.core
+    testImplementation libs.mockito.core
+    testImplementation libs.s3mock
+}
+
+repositories {
+    mavenCentral()
+    mavenLocal()
+}
+
+test {
+    // Use JUnit Platform with Vintage Engine for JUnit 4 compatibility
+    useJUnitPlatform()
+    exclude '**/*ITTest.class', '**/*E2ETest.class'
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showStandardStreams = true
+    }
+}
+
+distributions {
+    main {
+        contents {
+            from(jar)
+            from(configurations.runtimeClasspath)
+            from('src/main/plugin-metadata/plugin-metadata.yaml') {
+                expand(
+                        classname: 'com.yelp.nrtsearch.plugins.ingestion.paimon.PaimonIngestPlugin',
+                        name: "nrtsearch-paimon-ingestion",
+                        version: project.version,
+                        description: 'Apache Paimon ingestion plugin for nrtsearch with Dynamic Shared Queue architecture',
+                        server_version: "1.+"
+                )
+            }
+        }
+    }
+}
+
+sourceSets {
+    integration {
+        java.srcDirs = ['src/test/java']
+        compileClasspath += sourceSets.main.output + configurations.testRuntimeClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+
+    e2e {
+        java.srcDirs = ['src/test/java']
+        compileClasspath += sourceSets.main.output + configurations.testRuntimeClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+configurations {
+    integrationImplementation.extendsFrom testImplementation
+    integrationRuntimeOnly.extendsFrom testRuntimeOnly
+    e2eImplementation.extendsFrom testImplementation
+    e2eRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+
+task e2eTest(type: Test) {
+    description = 'Runs end-to-end tests.'
+    group = 'verification'
+    include '**/*E2ETest.class'
+    testClassesDirs = sourceSets.e2e.output.classesDirs
+    classpath = sourceSets.e2e.runtimeClasspath
+    useJUnitPlatform()
+    jvmArgs '-XX:MaxDirectMemorySize=1024m'
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showStandardStreams = true
+    }
+}

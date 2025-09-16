@@ -23,4 +23,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "nrtsearch-ingestion-plugins"
 include("kafka-plugin")
-// include("paimon-plugin")
+include("paimon-plugin")

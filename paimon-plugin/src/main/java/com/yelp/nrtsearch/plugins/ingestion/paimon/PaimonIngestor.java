@@ -1,0 +1,639 @@
+/*
+ * Copyright 2025 Yelp Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.yelp.nrtsearch.plugins.ingestion.paimon;
+
+import com.yelp.nrtsearch.plugins.ingestion.paimon.PaimonToAddDocumentConverter.UnrecoverableConversionException;
+import com.yelp.nrtsearch.server.config.NrtsearchConfig;
+import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
+import com.yelp.nrtsearch.server.ingestion.AbstractIngestor;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogContext;
+import org.apache.paimon.catalog.CatalogFactory;
+import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.options.Options;
+import org.apache.paimon.reader.RecordReader;
+import org.apache.paimon.table.Table;
+import org.apache.paimon.table.source.DataSplit;
+import org.apache.paimon.table.source.ReadBuilder;
+import org.apache.paimon.table.source.Split;
+import org.apache.paimon.table.source.StreamTableScan;
+import org.apache.paimon.table.source.TableRead;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Ingestor for Apache Paimon data lake tables using Dynamic Shared Queue architecture. Handles
+ * workload skew in dynamic bucket tables by using a coordinator-worker pattern with incremental
+ * checkpointing and ordering guarantees for same keys.
+ */
+public class PaimonIngestor extends AbstractIngestor {
+  private static final Logger LOGGER = LoggerFactory.getLogger(PaimonIngestor.class);
+
+  private BlockingQueue<BucketWork> workQueue;
+  private final ExecutorService executorService;
+  private final AtomicBoolean running;
+  private final PaimonConfig paimonConfig;
+  private PaimonToAddDocumentConverter converter;
+
+  // Paimon components
+  private Catalog catalog;
+  private Table table;
+  private TableRead tableRead;
+  private StreamTableScan streamTableScan;
+
+  // Checkpoint management: TODO store this on remote storage for persistence
+  private final AtomicReference<Long> lastCheckpointId = new AtomicReference<>(null);
+
+  public PaimonIngestor(
+      NrtsearchConfig config, ExecutorService executorService, PaimonConfig paimonConfig) {
+    super(config);
+    this.executorService = executorService;
+    this.workQueue = new LinkedBlockingQueue<>(paimonConfig.getQueueCapacity());
+    this.running = new AtomicBoolean(false);
+    this.paimonConfig = paimonConfig;
+    this.converter = new PaimonToAddDocumentConverter(paimonConfig);
+
+    LOGGER.info(
+        "Initialized PaimonIngestor with Dynamic Shared Queue architecture and incremental checkpointing");
+  }
+
+  @Override
+  public void start() throws IOException {
+    if (running.compareAndSet(false, true)) {
+      LOGGER.info("Starting Paimon ingestion");
+
+      try {
+        initializePaimonComponents();
+
+        // Start coordinator thread
+        executorService.submit(this::coordinatorLoop);
+
+        // Start worker threads
+        for (int i = 0; i < paimonConfig.getWorkerThreads(); i++) {
+          final int workerId = i;
+          executorService.submit(() -> workerLoop(workerId));
+        }
+
+        LOGGER.info("Paimon ingestion started with {} workers", paimonConfig.getWorkerThreads());
+      } catch (Exception e) {
+        running.set(false);
+        throw new IOException("Failed to start Paimon ingestion", e);
+      }
+    }
+  }
+
+  @Override
+  public void stop() throws IOException {
+    if (running.compareAndSet(true, false)) {
+      LOGGER.info("Stopping Paimon ingestion");
+
+      try {
+        if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+          executorService.shutdownNow();
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        executorService.shutdownNow();
+      }
+
+      // Close Paimon resources
+      try {
+        if (catalog != null) {
+          catalog.close();
+        }
+      } catch (Exception e) {
+        LOGGER.error("Error closing Paimon catalog", e);
+      }
+
+      LOGGER.info("Paimon ingestion stopped");
+    }
+  }
+
+  /** Initialize Paimon catalog, table, and read components. */
+  protected void initializePaimonComponents() throws Exception {
+    LOGGER.info("Initializing Paimon components");
+
+    // Create catalog options
+    Options catalogOptions = new Options();
+    catalogOptions.set("warehouse", paimonConfig.getWarehousePath());
+
+    // --- ADD S3 CONFIGURATION TRANSLATION ---
+    // Check if warehouse path uses S3 - if so, apply S3 settings regardless of explicit config
+    if (paimonConfig.getWarehousePath().startsWith("s3a://")) {
+      LOGGER.info("S3A warehouse path detected. Applying S3A configuration.");
+
+      // Universal S3A settings - needed for ANY S3A access (test or production)
+      catalogOptions.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem");
+      catalogOptions.set("fs.s3a.connection.maximum", "256");
+      catalogOptions.set("fs.s3a.threads.max", "128");
+      catalogOptions.set("fs.s3a.block.size", "64M");
+
+      // Get optional S3 configuration for environment-specific settings
+      Map<String, Map<String, Object>> pluginConfigs = config.getIngestionPluginConfigs();
+      Map<String, Object> paimonPluginConfig = pluginConfigs.get("paimon");
+      Map<String, Object> s3Config = null;
+      if (paimonPluginConfig != null) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> s3ConfigRaw = (Map<String, Object>) paimonPluginConfig.get("s3");
+        s3Config = s3ConfigRaw;
+      }
+
+      if (s3Config != null && s3Config.get("endpoint") != null) {
+        // --- TEST/LOCAL ENVIRONMENT ---
+        // Endpoint provided = using S3Mock, configure with explicit credentials
+        LOGGER.info("S3 endpoint provided. Configuring for local/test environment.");
+        catalogOptions.set("fs.s3a.endpoint", s3Config.get("endpoint").toString());
+        catalogOptions.set("fs.s3a.access.key", s3Config.get("s3-access-key").toString());
+        catalogOptions.set("fs.s3a.secret.key", s3Config.get("s3-secret-key").toString());
+        if ("true".equals(s3Config.get("path.style.access"))) {
+          catalogOptions.set("fs.s3a.path.style.access", "true");
+        }
+        catalogOptions.set(
+            "fs.s3a.aws.credentials.provider",
+            "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider");
+      } else {
+        // --- PRODUCTION ENVIRONMENT ---
+        // No explicit S3 config = production with IAM roles
+        LOGGER.info("No S3 endpoint configured. Using production IAM roles.");
+        catalogOptions.set(
+            "fs.s3a.aws.credentials.provider",
+            "com.amazonaws.auth.WebIdentityTokenCredentialsProvider,"
+                + "com.amazonaws.auth.DefaultAWSCredentialsProviderChain");
+      }
+
+      LOGGER.info("Applied S3A configuration for warehouse: {}", paimonConfig.getWarehousePath());
+    }
+    // --- END S3 CONFIGURATION TRANSLATION ---
+
+    // Create catalog
+    CatalogContext catalogContext = CatalogContext.create(catalogOptions);
+    this.catalog = CatalogFactory.createCatalog(catalogContext);
+
+    // Get table
+    String[] pathParts = paimonConfig.getTablePath().split("\\.");
+    if (pathParts.length != 2) {
+      throw new IllegalArgumentException(
+          "Table path must be in format 'database.table', got: " + paimonConfig.getTablePath());
+    }
+    String database = pathParts[0];
+    String tableName = pathParts[1];
+
+    this.table = catalog.getTable(org.apache.paimon.catalog.Identifier.create(database, tableName));
+
+    // Initialize converter with table schema
+    converter.setRowType(table.rowType());
+
+    // Create table read and stream scan
+    ReadBuilder readBuilder = table.newReadBuilder();
+    this.tableRead = readBuilder.newRead();
+    this.streamTableScan = readBuilder.newStreamScan();
+
+    LOGGER.info("Successfully initialized Paimon table: {}", paimonConfig.getTablePath());
+  }
+
+  /**
+   * Coordinator thread: discovers incremental work and distributes to shared queue. Uses Paimon's
+   * checkpoint/restore mechanism for incremental processing.
+   */
+  protected void coordinatorLoop() {
+    LOGGER.info("Coordinator thread started with incremental checkpointing");
+
+    while (running.get()) {
+      try {
+        // Restore from last checkpoint if available
+        // TODO: make checkpointing persistent e.g. checkpoint and restore from s3
+        Long prevCheckpoint = lastCheckpointId.get();
+        if (prevCheckpoint != null) {
+          streamTableScan.restore(prevCheckpoint);
+          LOGGER.debug("Restored stream table scan from checkpoint: {}", prevCheckpoint);
+        }
+
+        // Scan for new splits since last checkpoint
+        List<Split> incrementalSplits = streamTableScan.plan().splits();
+
+        LOGGER.debug("Found {} incremental splits since last checkpoint", incrementalSplits.size());
+
+        if (!incrementalSplits.isEmpty()) {
+          // Group splits by bucket for ordered processing
+          Map<Integer, List<Split>> splitsByBucket = groupSplitsByBucket(incrementalSplits);
+          long newPaimonCheckpointId = streamTableScan.checkpoint(); // Get checkpoint ID upfront
+
+          // PHASE 1: PREPARE BATCH - Create coordination object
+          InFlightBatch batch = new InFlightBatch(newPaimonCheckpointId, splitsByBucket.size());
+
+          // PHASE 2: DISPATCH WORK - Add all work to queue with batch reference
+          for (Map.Entry<Integer, List<Split>> entry : splitsByBucket.entrySet()) {
+            List<Split> sortedSplits = sortSplitsBySequence(entry.getValue());
+            BucketWork bucketWork = new BucketWork(entry.getKey(), sortedSplits, batch);
+
+            // Block with timeout and continuous logging (prevents data loss)
+            boolean queued = false;
+            while (!queued && running.get()) {
+              try {
+                if (workQueue.offer(bucketWork, 30, TimeUnit.SECONDS)) {
+                  queued = true;
+                } else {
+                  LOGGER.warn(
+                      "Work queue full for 30s, coordinator blocked - no progress on bucket {} with {} splits",
+                      entry.getKey(),
+                      entry.getValue().size());
+                }
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+              }
+            }
+          }
+
+          // PHASE 3: AWAIT COMPLETION - Critical synchronization point
+          LOGGER.info(
+              "Coordinator dispatched {} buckets for checkpoint {}. Awaiting completion...",
+              splitsByBucket.size(),
+              newPaimonCheckpointId);
+
+          batch.awaitCompletion();
+
+          LOGGER.info("All workers completed work for checkpoint {}", newPaimonCheckpointId);
+
+          // PHASE 4: COMMIT CHECKPOINT - Only happens after all work is done
+          lastCheckpointId.set(newPaimonCheckpointId);
+          // TODO: Persist to S3 for crash recovery
+
+          LOGGER.debug("Successfully committed Paimon checkpoint {}", newPaimonCheckpointId);
+        }
+
+        // Sleep before next scan
+        Thread.sleep(paimonConfig.getScanIntervalMs());
+
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      } catch (Exception e) {
+        LOGGER.error("Error in coordinator loop", e);
+        try {
+          Thread.sleep(5000); // Back off on error
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+    }
+
+    LOGGER.info("Coordinator thread stopped");
+  }
+
+  /**
+   * Worker thread: processes buckets from shared queue. Maintains ordering guarantees within each
+   * bucket while allowing parallel processing.
+   */
+  protected void workerLoop(int workerId) {
+    LOGGER.info("Worker thread {} started", workerId);
+
+    while (running.get()) {
+      try {
+        BucketWork bucketWork =
+            workQueue.poll(paimonConfig.getPollTimeoutMs(), TimeUnit.MILLISECONDS);
+        if (bucketWork != null) {
+          processBucketWork(bucketWork, workerId);
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      } catch (Exception e) {
+        LOGGER.error("Error in worker {} loop", workerId, e);
+      }
+    }
+
+    LOGGER.info("Worker thread {} stopped", workerId);
+  }
+
+  /**
+   * Process a single bucket's worth of work. Maintains sequential ordering within the bucket for
+   * same keys.
+   */
+  protected void processBucketWork(BucketWork bucketWork, int workerId) {
+    final int MAX_RETRIES = 3;
+    final long RETRY_BACKOFF_MS = 1000;
+
+    for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        processBucketAtomically(bucketWork, workerId, attempt, MAX_RETRIES);
+
+        // SUCCESS: Signal completion only after entire bucket succeeds
+        bucketWork.getBatch().markBucketComplete();
+        LOGGER.debug("Worker {} completed bucket {}", workerId, bucketWork.getBucketId());
+        return; // Exit retry loop
+
+      } catch (TransientProcessingException e) {
+        LOGGER.warn(
+            "Worker {} transient failure on bucket {} attempt {}/{}: {}",
+            workerId,
+            bucketWork.getBucketId(),
+            attempt,
+            MAX_RETRIES,
+            e.getMessage());
+
+        if (attempt == MAX_RETRIES) {
+          LOGGER.error(
+              "Worker {} PERMANENTLY FAILED bucket {} after {} attempts. Pipeline halted.",
+              workerId,
+              bucketWork.getBucketId(),
+              MAX_RETRIES);
+          // Safe Halt: Don't call markBucketComplete() - coordinator waits indefinitely
+          return;
+        }
+
+        // Exponential backoff for transient errors
+        sleepWithBackoff(RETRY_BACKOFF_MS, attempt);
+      }
+    }
+  }
+
+  /** Atomic processing of all splits in a bucket with poison pill handling. */
+  private void processBucketAtomically(
+      BucketWork bucketWork, int workerId, int attempt, int maxRetries) {
+    LOGGER.debug(
+        "Worker {} processing bucket {} attempt {}/{}",
+        workerId,
+        bucketWork.getBucketId(),
+        attempt,
+        maxRetries);
+
+    List<AddDocumentRequest> addDocumentRequests = new ArrayList<>();
+    final AtomicLong lastFlushTime = new AtomicLong(System.currentTimeMillis());
+    final long BATCH_TIMEOUT_MS = 5000;
+
+    try {
+      // Process each split sequentially to maintain ordering
+      for (Split split : bucketWork.getSplits()) {
+        try (RecordReader<InternalRow> reader = tableRead.createReader(split)) {
+          reader.forEachRemaining(
+              row -> {
+                processRowSafely(
+                    row,
+                    addDocumentRequests,
+                    lastFlushTime,
+                    BATCH_TIMEOUT_MS,
+                    workerId,
+                    bucketWork.getBucketId());
+              });
+        }
+      }
+
+      // Process final batch - TransientProcessingException will propagate up
+      flushBatch(
+          addDocumentRequests,
+          null,
+          System.currentTimeMillis(),
+          workerId,
+          bucketWork.getBucketId());
+
+    } catch (TransientProcessingException e) {
+      // Re-throw transient exceptions for retry logic
+      throw e;
+    } catch (Exception e) {
+      // Convert any other exception to TransientProcessingException for retry logic
+      throw new TransientProcessingException("Bucket processing failed", e);
+    }
+  }
+
+  /**
+   * Process a single row with precise two-tier error handling. UnrecoverableConversionException =
+   * poison pills (log and skip). Everything else = transient errors (let propagate for retry).
+   */
+  private void processRowSafely(
+      InternalRow row,
+      List<AddDocumentRequest> addDocumentRequests,
+      AtomicLong lastFlushTime,
+      long batchTimeoutMs,
+      int workerId,
+      int bucketId) {
+    // POISON PILL PROTECTION: Only catch specific conversion errors
+    AddDocumentRequest docRequest;
+    try {
+      docRequest = converter.convertRowToDocument(row);
+    } catch (UnrecoverableConversionException e) {
+      // POISON PILL: Log and skip bad record, continue processing
+      LOGGER.error(
+          "Poison pill detected - skipping bad record in bucket {}: {}", bucketId, e.getMessage());
+      // TODO: Send to dead letter queue
+      return; // Skip this record
+    }
+
+    addDocumentRequests.add(docRequest);
+
+    // Time + size based batching
+    long currentTime = System.currentTimeMillis();
+    boolean sizeFull = addDocumentRequests.size() >= paimonConfig.getBatchSize();
+    boolean timeExpired = (currentTime - lastFlushTime.get()) >= batchTimeoutMs;
+
+    if (sizeFull || timeExpired) {
+      // Let batch processing errors propagate up for retry
+      flushBatch(addDocumentRequests, lastFlushTime, currentTime, workerId, bucketId);
+    }
+  }
+
+  /** Flush batch with transient error handling. Unified method for both timed and final batches. */
+  private void flushBatch(
+      List<AddDocumentRequest> batch,
+      AtomicLong lastFlushTime,
+      long currentTime,
+      int workerId,
+      int bucketId) {
+    if (!batch.isEmpty()) {
+      try {
+        processBatch(batch, workerId, bucketId);
+        batch.clear();
+        // Only update flush time if lastFlushTime is provided (not null for timed batches)
+        if (lastFlushTime != null) {
+          lastFlushTime.set(currentTime);
+        }
+      } catch (Exception e) {
+        // TRANSIENT ERROR: Wrap in TransientProcessingException for consistent error handling
+        throw new TransientProcessingException("Batch processing failed - likely transient", e);
+      }
+    }
+  }
+
+  /** Sleep with exponential backoff for transient error recovery. */
+  private void sleepWithBackoff(long baseDelayMs, int attempt) {
+    try {
+      long delayMs = baseDelayMs * (1L << (attempt - 1)); // Exponential: 1s, 2s, 4s
+      Thread.sleep(delayMs);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * Unchecked exception wrapper for transient processing errors that should be retried. Using
+   * RuntimeException simplifies method signatures while making error path explicit.
+   */
+  private static class TransientProcessingException extends RuntimeException {
+    public TransientProcessingException(String message, Throwable cause) {
+      super(message, cause);
+    }
+  }
+
+  /** Process a batch of documents. */
+  protected void processBatch(List<AddDocumentRequest> batch, int workerId, int bucketId)
+      throws Exception {
+    String indexName = paimonConfig.getTargetIndexName();
+    long seqNum = addDocuments(batch, indexName);
+    commit(indexName); // Commit after adding documents
+    LOGGER.debug(
+        "Worker {} indexed and committed {} documents from bucket {}, seqNum: {}",
+        workerId,
+        batch.size(),
+        bucketId,
+        seqNum);
+  }
+
+  /**
+   * Group splits by bucket ID for ordered processing. Extracts bucket information from DataSplit
+   * metadata.
+   */
+  private Map<Integer, List<Split>> groupSplitsByBucket(List<Split> splits) {
+    Map<Integer, List<Split>> bucketMap = new HashMap<>();
+
+    for (Split split : splits) {
+      int bucketId = extractBucketId(split);
+      bucketMap.computeIfAbsent(bucketId, k -> new ArrayList<>()).add(split);
+    }
+
+    return bucketMap;
+  }
+
+  /** Sort splits by sequence number to maintain ordering for same keys within a bucket. */
+  private List<Split> sortSplitsBySequence(List<Split> splits) {
+    List<Split> sortedSplits = new ArrayList<>(splits);
+
+    // Sort by sequence number from DataSplit for ordering guarantees
+    sortedSplits.sort(
+        (s1, s2) -> {
+          long seq1 = getSequenceNumber(s1);
+          long seq2 = getSequenceNumber(s2);
+          return Long.compare(seq1, seq2);
+        });
+
+    return sortedSplits;
+  }
+
+  /** Extract bucket ID from a Paimon split. */
+  private int extractBucketId(Split split) {
+    if (split instanceof DataSplit) {
+      DataSplit dataSplit = (DataSplit) split;
+      // Get bucket from DataSplit's partition information
+      return dataSplit.bucket();
+    }
+    // Default to bucket 0 for non-DataSplit types
+    return 0;
+  }
+
+  /** Extract sequence number from a Paimon split for ordering. */
+  private long getSequenceNumber(Split split) {
+    if (split instanceof DataSplit) {
+      DataSplit dataSplit = (DataSplit) split;
+      // Get minimum sequence number from DataSplit for ordering
+      // This ensures ordering for same keys across multiple splits in same bucket
+      return dataSplit.dataFiles().stream()
+          .mapToLong(file -> file.minSequenceNumber())
+          .min()
+          .orElse(0L);
+    }
+    return 0L;
+  }
+
+  /**
+   * Represents a unit of work for a specific bucket. Contains sorted splits for ordered processing
+   * within the bucket.
+   */
+  public static class BucketWork {
+    private final int bucketId;
+    private final List<Split> splits;
+    private final InFlightBatch batch;
+
+    public BucketWork(int bucketId, List<Split> splits, InFlightBatch batch) {
+      this.bucketId = bucketId;
+      this.splits = splits;
+      this.batch = batch;
+    }
+
+    public int getBucketId() {
+      return bucketId;
+    }
+
+    public List<Split> getSplits() {
+      return splits;
+    }
+
+    public InFlightBatch getBatch() {
+      return batch;
+    }
+  }
+
+  // ============================================================================
+  // PROTECTED METHODS FOR TESTING FRAMEWORK
+  // ============================================================================
+
+  protected AtomicBoolean getRunning() {
+    return running;
+  }
+
+  protected Long getLastCheckpointId() {
+    return lastCheckpointId.get();
+  }
+
+  protected BlockingQueue<BucketWork> getWorkQueue() {
+    return workQueue;
+  }
+
+  protected void setTable(Table table) {
+    this.table = table;
+  }
+
+  protected void setTableRead(TableRead tableRead) {
+    this.tableRead = tableRead;
+  }
+
+  protected void setStreamTableScan(StreamTableScan streamTableScan) {
+    this.streamTableScan = streamTableScan;
+  }
+
+  protected PaimonToAddDocumentConverter getConverter() {
+    return converter;
+  }
+
+  protected void setConverter(PaimonToAddDocumentConverter converter) {
+    this.converter = converter;
+  }
+
+  protected void setWorkQueue(BlockingQueue<BucketWork> workQueue) {
+    this.workQueue = workQueue;
+  }
+}

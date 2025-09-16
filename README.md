@@ -42,8 +42,8 @@ This automated setup will:
 
 3. **Verify installation**:
 ```bash
-# Run all tests (unit + integration + E2E)
-./gradlew test integrationTest e2eTest
+# Run all tests (unit + E2E)
+./gradlew test e2eTest
 
 # Build plugin distributions
 ./gradlew distZip
@@ -56,11 +56,6 @@ The repository includes comprehensive testing at multiple levels:
 **Unit Tests** (fast, no external dependencies):
 ```bash
 ./gradlew test
-```
-
-**Integration Tests** (with mocked services):
-```bash
-./gradlew integrationTest  
 ```
 
 **End-to-End Tests** (full Kafka + Schema Registry via Docker):
@@ -146,7 +141,7 @@ Example compatible Avro schema:
 1. **Fork and clone** the repository
 2. **Create a feature branch**: `git checkout -b feature/your-feature-name`
 3. **Make changes** with proper tests
-4. **Run the full test suite**: `./gradlew test integrationTest e2eTest`
+4. **Run the full test suite**: `./gradlew test e2eTest`
 5. **Submit a pull request**
 
 ### Adding a New Ingestion Plugin
@@ -182,7 +177,7 @@ dependencies {
 
 // Copy test configuration from kafka-plugin/build.gradle
 test { useJUnitPlatform() }
-// Add integrationTest and e2eTest tasks
+// Add e2eTest tasks
 ```
 
 #### 3. Implement Core Classes
@@ -264,8 +259,6 @@ public class NewIngestorE2ETest extends NrtsearchTest {
 # Fast feedback loop - unit tests only
 ./gradlew :your-plugin:test
 
-# Integration testing
-./gradlew :your-plugin:integrationTest
 
 # Full E2E validation (slower but comprehensive)  
 ./gradlew :your-plugin:e2eTest

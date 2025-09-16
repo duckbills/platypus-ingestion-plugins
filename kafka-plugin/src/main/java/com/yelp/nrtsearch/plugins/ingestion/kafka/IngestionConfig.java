@@ -78,8 +78,7 @@ public class IngestionConfig {
     this.indexName = (String) configMap.get("indexName");
     this.autoRegisterFields =
         Boolean.parseBoolean(String.valueOf(configMap.getOrDefault("autoRegisterFields", false)));
-    this.batchSize =
-        String.valueOf(configMap.getOrDefault("batchSize", DEFAULT_BATCH_SIZE));
+    this.batchSize = String.valueOf(configMap.getOrDefault("batchSize", DEFAULT_BATCH_SIZE));
     validate();
   }
 

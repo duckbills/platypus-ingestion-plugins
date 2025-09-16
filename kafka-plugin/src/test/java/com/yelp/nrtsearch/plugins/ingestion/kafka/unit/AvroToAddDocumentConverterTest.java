@@ -162,7 +162,7 @@ public class AvroToAddDocumentConverterTest {
     parent.put("nested", nested);
 
     AddDocumentRequest request = converter.convertToNrtDocument(parent, INDEX_NAME);
-    assertEquals("value", getSingleValue(request, "nested.innerField"));
+    assertEquals("value", getSingleValue(request, "nested_innerField"));
   }
 
   @Test

@@ -1,4 +1,4 @@
-package com.yelp.nrtsearch.plugins.ingestion.kafka.e2e;
+package com.yelp.nrtsearch.plugins.ingestion.paimon.e2e;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.Assert.assertEquals;
@@ -6,48 +6,55 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import com.yelp.nrtsearch.server.grpc.*;
-import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
-import org.apache.avro.Schema;
-import org.apache.avro.generic.GenericData;
-import org.apache.avro.generic.GenericRecord;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogContext;
+import org.apache.paimon.catalog.CatalogFactory;
+import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.GenericRow;
+import org.apache.paimon.options.Options;
+import org.apache.paimon.schema.Schema;
+import org.apache.paimon.table.Table;
+import org.apache.paimon.table.sink.BatchTableCommit;
+import org.apache.paimon.table.sink.BatchTableWrite;
+import org.apache.paimon.table.sink.BatchWriteBuilder;
+import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.types.DataTypes;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.KafkaContainer;
-import org.testcontainers.containers.Network;
-import org.testcontainers.utility.DockerImageName;
 
 /**
- * Comprehensive E2E test for Kafka ingestion plugin.
+ * Comprehensive E2E test for Paimon ingestion plugin.
  *
- * <p>Test Flow: 1. Start Kafka + Schema Registry (Testcontainers) 2. Start real nrtSearch server
- * with plugin loading 3. Create index and register schema 4. Publish Avro messages to Kafka 5. Wait
- * for ingestion to index documents 6. Query nrtSearch to verify data
+ * <p>Test Flow: 1. Create temporary Paimon warehouse and tables using Java API 2. Start real
+ * nrtSearch server with plugin loading 3. Create index and register schema matching Paimon table 4.
+ * Write test data to Paimon table using batch writes 5. Wait for ingestion to index documents 6.
+ * Query nrtSearch to verify data
  */
-public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.NrtsearchTest {
-  private static final Logger LOGGER = LoggerFactory.getLogger(KafkaIngestorE2ETest.class);
+public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.NrtsearchTest {
+  private static final Logger LOGGER = LoggerFactory.getLogger(PaimonIngestorE2ETest.class);
 
-  static final String TEST_TOPIC = "test-documents";
+  static final String DATABASE_NAME = "test_db";
+  static final String TABLE_NAME = "documents";
   static final String INDEX_NAME = "test-index";
-  static final String CONSUMER_GROUP_BASE = "test-consumer-group";
   static final String S3_BUCKET_NAME = "test-bucket";
 
-  public KafkaIngestorE2ETest() throws IOException {
+  private static final String PLUGIN_S3_KEY = "nrtsearch/plugins/paimon-plugin-0.1.0-SNAPSHOT.zip";
+  private static TemporaryFolder tempWarehouse;
+  private static String warehousePath;
+  private static Catalog catalog;
+
+  public PaimonIngestorE2ETest() throws IOException {
     super();
   }
-
-  private static final String PLUGIN_S3_KEY = "nrtsearch/plugins/kafka-plugin-0.1.0-SNAPSHOT.zip";
 
   @BeforeClass
   public static void addPluginToS3() throws Exception {
@@ -56,7 +63,7 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
 
     // Upload the plugin zip to S3
     String projectRoot = System.getProperty("user.dir");
-    String pluginZipPath = projectRoot + "/build/distributions/kafka-plugin-0.1.0-SNAPSHOT.zip";
+    String pluginZipPath = projectRoot + "/build/distributions/paimon-plugin-0.1.0-SNAPSHOT.zip";
 
     getS3Client().putObject(getS3BucketName(), PLUGIN_S3_KEY, new java.io.File(pluginZipPath));
   }
@@ -67,39 +74,9 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
     return List.of(path);
   }
 
-  // Testcontainers
-  static Network network;
-  static KafkaContainer kafka;
-  static GenericContainer<?> schemaRegistry;
-
-  // Test data
-  static final String AVRO_SCHEMA_JSON =
-      """
-        {
-          "type": "record",
-          "name": "Document",
-          "fields": [
-            {"name": "id", "type": "string"},
-            {"name": "title", "type": "string"},
-            {"name": "content", "type": "string"},
-            {"name": "category", "type": "string"},
-            {"name": "rating", "type": "double"},
-            {"name": "tags", "type": {"type": "array", "items": "string"}},
-            {"name": "metadata", "type": {
-              "type": "record",
-              "name": "Metadata",
-              "fields": [
-                {"name": "author", "type": "string"},
-                {"name": "publishDate", "type": "string"}
-              ]
-            }}
-          ]
-        }
-        """;
-
   private static void buildPluginDistribution() throws Exception {
     String projectRoot = System.getProperty("user.dir");
-    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":kafka-plugin:distZip");
+    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":paimon-plugin:distZip");
     pb.directory(
         new java.io.File(projectRoot).getParentFile()); // Go up to nrtsearch-ingestion-plugins
     pb.inheritIO(); // Show build output
@@ -112,62 +89,176 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
 
   @BeforeClass
   public static void setup() throws Exception {
-    startInfrastructure();
-    publishTestData();
+    setupPaimonInfrastructure();
+    createPaimonTable();
+    writeTestDataToPaimon();
   }
 
   @Override
   protected void addNrtsearchConfigs(Map<String, Object> config) {
     super.addNrtsearchConfigs(config); // Get the defaults including plugin setup
 
-    // Add plugin configuration for Kafka
+    // Add plugin configuration for Paimon
     Map<String, Object> pluginConfigs = new HashMap<>();
     Map<String, Object> ingestionConfigs = new HashMap<>();
-    Map<String, Object> kafkaConfigs = new HashMap<>();
+    Map<String, Object> paimonConfigs = new HashMap<>();
 
-    // Generate unique consumer group ID for each test instance
-    String uniqueGroupId = CONSUMER_GROUP_BASE + "-" + System.nanoTime();
+    paimonConfigs.put("warehouse.path", warehousePath);
+    paimonConfigs.put("table.path", DATABASE_NAME + "." + TABLE_NAME);
+    paimonConfigs.put("target.index.name", INDEX_NAME);
+    paimonConfigs.put("worker.threads", 2);
+    paimonConfigs.put("batch.size", 10);
+    paimonConfigs.put("scan.interval.ms", 1000);
 
-    kafkaConfigs.put("bootstrapServers", kafka.getBootstrapServers());
-    kafkaConfigs.put("topic", TEST_TOPIC);
-    kafkaConfigs.put("groupId", uniqueGroupId);
-    kafkaConfigs.put("indexName", INDEX_NAME);
-    kafkaConfigs.put("schemaRegistryUrl", "http://localhost:" + schemaRegistry.getMappedPort(8081));
-    kafkaConfigs.put("autoOffsetReset", "earliest");
-    kafkaConfigs.put("batchSize", 10);
-
-    ingestionConfigs.put("kafka", kafkaConfigs);
+    ingestionConfigs.put("paimon", paimonConfigs);
     pluginConfigs.put("ingestion", ingestionConfigs);
     config.put("pluginConfigs", pluginConfigs);
   }
 
-  static void startInfrastructure() {
-    LOGGER.info("Starting Kafka infrastructure...");
+  static void setupPaimonInfrastructure() throws Exception {
+    LOGGER.info("Setting up Paimon infrastructure...");
 
-    network = Network.newNetwork();
+    // Create temporary warehouse directory
+    tempWarehouse = new TemporaryFolder();
+    tempWarehouse.create();
+    warehousePath = tempWarehouse.getRoot().getAbsolutePath();
 
-    // Start Kafka
-    kafka =
-        new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.1"))
-            .withNetwork(network)
-            .withNetworkAliases("kafka");
-    kafka.start();
+    LOGGER.info("Created Paimon warehouse at: {}", warehousePath);
 
-    // Start Schema Registry
-    schemaRegistry =
-        new GenericContainer<>(DockerImageName.parse("confluentinc/cp-schema-registry:7.5.1"))
-            .withNetwork(network)
-            .withNetworkAliases("schema-registry")
-            .withEnv("SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS", "kafka:9092")
-            .withEnv("SCHEMA_REGISTRY_HOST_NAME", "schema-registry")
-            .withEnv("SCHEMA_REGISTRY_LISTENERS", "http://0.0.0.0:8081")
-            .withExposedPorts(8081);
-    schemaRegistry.start();
+    // Create filesystem catalog
+    Options catalogOptions = new Options();
+    catalogOptions.set("warehouse", warehousePath);
+    CatalogContext catalogContext = CatalogContext.create(catalogOptions);
+    catalog = CatalogFactory.createCatalog(catalogContext);
 
-    LOGGER.info(
-        "Kafka: {}, Schema Registry: {}",
-        kafka.getBootstrapServers(),
-        "http://localhost:" + schemaRegistry.getMappedPort(8081));
+    // Create database
+    try {
+      catalog.createDatabase(DATABASE_NAME, false);
+      LOGGER.info("Created database: {}", DATABASE_NAME);
+    } catch (Catalog.DatabaseAlreadyExistException e) {
+      LOGGER.info("Database already exists: {}", DATABASE_NAME);
+    }
+  }
+
+  static void createPaimonTable() throws Exception {
+    LOGGER.info("Creating Paimon table...");
+
+    // Define schema matching test documents
+    Schema.Builder schemaBuilder = Schema.newBuilder();
+    schemaBuilder.column("id", DataTypes.STRING().notNull());
+    schemaBuilder.column("title", DataTypes.STRING());
+    schemaBuilder.column("content", DataTypes.STRING());
+    schemaBuilder.column("category", DataTypes.STRING());
+    schemaBuilder.column("rating", DataTypes.DOUBLE());
+    schemaBuilder.column("tags", DataTypes.ARRAY(DataTypes.STRING()));
+    schemaBuilder.column("metadata_author", DataTypes.STRING());
+    schemaBuilder.column("metadata_publishDate", DataTypes.STRING());
+
+    // Set primary key for efficient lookups
+    schemaBuilder.primaryKey("id");
+
+    Schema schema = schemaBuilder.build();
+    Identifier identifier = Identifier.create(DATABASE_NAME, TABLE_NAME);
+
+    try {
+      catalog.createTable(identifier, schema, false);
+      LOGGER.info("Created Paimon table: {}.{}", DATABASE_NAME, TABLE_NAME);
+    } catch (Catalog.TableAlreadyExistException e) {
+      LOGGER.info("Table already exists: {}.{}", DATABASE_NAME, TABLE_NAME);
+    }
+  }
+
+  static void writeTestDataToPaimon() throws Exception {
+    LOGGER.info("Writing test data to Paimon table...");
+
+    Identifier identifier = Identifier.create(DATABASE_NAME, TABLE_NAME);
+    Table table = catalog.getTable(identifier);
+
+    // Create batch writer
+    BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
+    BatchTableWrite write = writeBuilder.newWrite();
+
+    // Create test documents
+    List<GenericRow> testDocs = createTestDocuments();
+
+    // Write documents with bucket determined by primary key hash (ensures same keys go to same
+    // bucket)
+    final int numBuckets = 3;
+    for (GenericRow doc : testDocs) {
+      String id = doc.getField(0).toString(); // id is the primary key
+      int bucket = Math.abs(id.hashCode()) % numBuckets;
+      write.write(doc, bucket);
+      LOGGER.debug("Wrote document: {}", doc.getField(0)); // id field
+    }
+
+    // Prepare commit
+    List<CommitMessage> messages = write.prepareCommit();
+
+    // Commit the batch
+    BatchTableCommit commit = writeBuilder.newCommit();
+    commit.commit(messages);
+
+    LOGGER.info("Successfully wrote {} documents to Paimon table", testDocs.size());
+  }
+
+  static List<GenericRow> createTestDocuments() {
+    List<GenericRow> docs = new ArrayList<>();
+
+    // Document 1
+    GenericRow doc1 =
+        GenericRow.of(
+            BinaryString.fromString("doc1"),
+            BinaryString.fromString("Machine Learning Basics"),
+            BinaryString.fromString("Introduction to neural networks and deep learning concepts"),
+            BinaryString.fromString("technology"),
+            4.5,
+            new org.apache.paimon.data.GenericArray(
+                new BinaryString[] {
+                  BinaryString.fromString("ml"),
+                  BinaryString.fromString("ai"),
+                  BinaryString.fromString("tutorial")
+                }),
+            BinaryString.fromString("Alice Smith"),
+            BinaryString.fromString("2024-01-15"));
+    docs.add(doc1);
+
+    // Document 2
+    GenericRow doc2 =
+        GenericRow.of(
+            BinaryString.fromString("doc2"),
+            BinaryString.fromString("Cooking Pasta Perfectly"),
+            BinaryString.fromString("Tips and tricks for making restaurant-quality pasta at home"),
+            BinaryString.fromString("cooking"),
+            4.8,
+            new org.apache.paimon.data.GenericArray(
+                new BinaryString[] {
+                  BinaryString.fromString("food"),
+                  BinaryString.fromString("recipe"),
+                  BinaryString.fromString("italian")
+                }),
+            BinaryString.fromString("Chef Mario"),
+            BinaryString.fromString("2024-01-20"));
+    docs.add(doc2);
+
+    // Document 3
+    GenericRow doc3 =
+        GenericRow.of(
+            BinaryString.fromString("doc3"),
+            BinaryString.fromString("Travel Guide: Tokyo"),
+            BinaryString.fromString("Best places to visit and authentic food experiences in Tokyo"),
+            BinaryString.fromString("travel"),
+            4.2,
+            new org.apache.paimon.data.GenericArray(
+                new BinaryString[] {
+                  BinaryString.fromString("travel"),
+                  BinaryString.fromString("japan"),
+                  BinaryString.fromString("guide")
+                }),
+            BinaryString.fromString("Travel Blogger"),
+            BinaryString.fromString("2024-01-25"));
+    docs.add(doc3);
+
+    return docs;
   }
 
   private void setupIndexAndSchema() {
@@ -185,7 +276,7 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
         CreateIndexRequest.newBuilder().setIndexName(INDEX_NAME).build();
     getClient().getBlockingStub().createIndex(createRequest);
 
-    // Register fields matching Avro schema
+    // Register fields matching Paimon schema
     FieldDefRequest.Builder fieldDefBuilder = FieldDefRequest.newBuilder().setIndexName(INDEX_NAME);
 
     // Basic fields
@@ -240,7 +331,7 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
             .setStore(true)
             .build());
 
-    // Nested fields (flattened with underscores - dots not allowed in field names)
+    // Metadata fields (flattened with underscores)
     fieldDefBuilder.addField(
         Field.newBuilder()
             .setName("metadata_author")
@@ -267,88 +358,9 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
     LOGGER.info("Index setup complete");
   }
 
-  static void publishTestData() throws Exception {
-    LOGGER.info("Publishing test data to Kafka...");
-
-    // Setup Kafka producer
-    Properties props = new Properties();
-    props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-    props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-    props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class.getName());
-    props.put("schema.registry.url", "http://localhost:" + schemaRegistry.getMappedPort(8081));
-
-    Schema schema = new Schema.Parser().parse(AVRO_SCHEMA_JSON);
-
-    try (KafkaProducer<String, GenericRecord> producer = new KafkaProducer<>(props)) {
-      // Create test documents
-      List<GenericRecord> testDocs = createTestDocuments(schema);
-
-      for (GenericRecord doc : testDocs) {
-        String key = doc.get("id").toString();
-        ProducerRecord<String, GenericRecord> record = new ProducerRecord<>(TEST_TOPIC, key, doc);
-        producer.send(record);
-        LOGGER.debug("Sent document: {}", key);
-      }
-
-      producer.flush();
-      LOGGER.info("Published {} test documents", testDocs.size());
-    }
-  }
-
-  static List<GenericRecord> createTestDocuments(Schema schema) {
-    List<GenericRecord> docs = new ArrayList<>();
-
-    // Document 1
-    GenericRecord doc1 = new GenericData.Record(schema);
-    doc1.put("id", "doc1");
-    doc1.put("title", "Machine Learning Basics");
-    doc1.put("content", "Introduction to neural networks and deep learning concepts");
-    doc1.put("category", "technology");
-    doc1.put("rating", 4.5);
-    doc1.put("tags", Arrays.asList("ml", "ai", "tutorial"));
-
-    GenericRecord metadata1 = new GenericData.Record(schema.getField("metadata").schema());
-    metadata1.put("author", "Alice Smith");
-    metadata1.put("publishDate", "2024-01-15");
-    doc1.put("metadata", metadata1);
-    docs.add(doc1);
-
-    // Document 2
-    GenericRecord doc2 = new GenericData.Record(schema);
-    doc2.put("id", "doc2");
-    doc2.put("title", "Cooking Pasta Perfectly");
-    doc2.put("content", "Tips and tricks for making restaurant-quality pasta at home");
-    doc2.put("category", "cooking");
-    doc2.put("rating", 4.8);
-    doc2.put("tags", Arrays.asList("food", "recipe", "italian"));
-
-    GenericRecord metadata2 = new GenericData.Record(schema.getField("metadata").schema());
-    metadata2.put("author", "Chef Mario");
-    metadata2.put("publishDate", "2024-01-20");
-    doc2.put("metadata", metadata2);
-    docs.add(doc2);
-
-    // Document 3
-    GenericRecord doc3 = new GenericData.Record(schema);
-    doc3.put("id", "doc3");
-    doc3.put("title", "Travel Guide: Tokyo");
-    doc3.put("content", "Best places to visit and authentic food experiences in Tokyo");
-    doc3.put("category", "travel");
-    doc3.put("rating", 4.2);
-    doc3.put("tags", Arrays.asList("travel", "japan", "guide"));
-
-    GenericRecord metadata3 = new GenericData.Record(schema.getField("metadata").schema());
-    metadata3.put("author", "Travel Blogger");
-    metadata3.put("publishDate", "2024-01-25");
-    doc3.put("metadata", metadata3);
-    docs.add(doc3);
-
-    return docs;
-  }
-
   @Test
-  public void testEndToEndKafkaIngestion() {
-    LOGGER.info("Testing end-to-end Kafka ingestion...");
+  public void testEndToEndPaimonIngestion() {
+    LOGGER.info("Testing end-to-end Paimon ingestion...");
 
     // Setup index and schema
     setupIndexAndSchema();
@@ -504,16 +516,20 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
   public static void cleanup() {
     LOGGER.info("Cleaning up test resources...");
 
-    if (schemaRegistry != null) {
-      schemaRegistry.stop();
+    try {
+      if (catalog != null) {
+        catalog.close();
+      }
+    } catch (Exception e) {
+      LOGGER.warn("Error closing catalog", e);
     }
 
-    if (kafka != null) {
-      kafka.stop();
-    }
-
-    if (network != null) {
-      network.close();
+    try {
+      if (tempWarehouse != null) {
+        tempWarehouse.delete();
+      }
+    } catch (Exception e) {
+      LOGGER.warn("Error cleaning up temporary warehouse", e);
     }
 
     LOGGER.info("Cleanup complete");
