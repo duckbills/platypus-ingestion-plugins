@@ -48,7 +48,7 @@ mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockito" }
 s3mock = { module = "io.findify:s3mock_2.13", version.ref = "s3mock" }
 
 # Optional: Nrtsearch (assumes published to Maven local or remote)
-nrtsearch-server = { module = "com.yelp.nrtsearch:server", version = "1.1.0" }
+nrtsearch-server = { module = "com.yelp.nrtsearch:server", version = "1.+" }
 
 [plugins]
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
