@@ -67,6 +67,7 @@ distributions {
                         server_version: "1.+"
                 )
             }
+            from('src/main/plugin-metadata/plugin-security.policy')
         }
     }
 }

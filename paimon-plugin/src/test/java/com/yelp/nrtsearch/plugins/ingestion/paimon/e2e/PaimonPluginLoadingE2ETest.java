@@ -19,7 +19,6 @@ import static org.junit.Assert.assertTrue;
 
 import com.yelp.nrtsearch.test_utils.NrtsearchTest;
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,18 +43,9 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
 
   @Override
   protected List<String> getPlugins() {
-    return List.of("paimon-plugin");
-  }
-
-  @Override
-  protected Path getPluginSearchPath() {
-    try {
-      Path pluginDir = super.getPluginSearchPath();
-      setupPluginDirectory(pluginDir);
-      return pluginDir;
-    } catch (Exception e) {
-      throw new RuntimeException("Failed to setup plugin directory", e);
-    }
+    // Upload ZIP to S3Mock and return S3 path - let NRTSearch handle download/extraction
+    setupPluginInS3();
+    return List.of("s3://" + getS3BucketName() + "/plugins/paimon-plugin-0.1.0-SNAPSHOT.zip");
   }
 
   @Override
@@ -80,59 +70,40 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
     config.put("pluginConfigs", pluginConfigs);
   }
 
-  private void setupPluginDirectory(Path pluginSearchPath) throws Exception {
-    LOGGER.info("Setting up paimon-plugin in test plugin directory: {}", pluginSearchPath);
+  private void setupPluginInS3() {
+    try {
+      LOGGER.info("Setting up paimon-plugin in S3Mock for download by NRTSearch...");
 
-    // Find the plugin distribution tar file
-    String projectRoot = System.getProperty("user.dir");
-    String pluginTarPath = projectRoot + "/build/distributions/paimon-plugin-0.1.0-SNAPSHOT.tar";
+      // Find the plugin distribution ZIP file
+      String projectRoot = System.getProperty("user.dir");
+      String pluginZipPath = projectRoot + "/build/distributions/paimon-plugin-0.1.0-SNAPSHOT.zip";
 
-    LOGGER.info("Looking for plugin distribution at: {}", pluginTarPath);
+      LOGGER.info("Looking for plugin distribution at: {}", pluginZipPath);
 
-    // Check if the distribution exists, if not build it first
-    if (!new java.io.File(pluginTarPath).exists()) {
-      LOGGER.info("Plugin distribution not found, building it...");
-      buildPluginDistribution(projectRoot);
-    }
-
-    // Extract the tar file to plugin search path
-    extractPluginDistribution(pluginTarPath, pluginSearchPath);
-
-    // Verify the plugin was set up correctly
-    Path paimonPluginDir = pluginSearchPath.resolve("paimon-plugin");
-    Path metadataFile = paimonPluginDir.resolve("plugin-metadata.yaml");
-    if (!metadataFile.toFile().exists()) {
-      throw new RuntimeException(
-          "Plugin setup failed - metadata file not found at: " + metadataFile);
-    }
-
-    LOGGER.info("Plugin setup complete at: {}", paimonPluginDir);
-    LOGGER.info("Found plugin metadata: {}", metadataFile);
-
-    // Log some dependency info for debugging
-    logPluginJars(paimonPluginDir);
-  }
-
-  private void logPluginJars(Path pluginDir) {
-    LOGGER.info("=== PLUGIN DEPENDENCY ANALYSIS ===");
-    java.io.File libDir = pluginDir.resolve("lib").toFile();
-    if (libDir.exists() && libDir.isDirectory()) {
-      java.io.File[] jars = libDir.listFiles((dir, name) -> name.endsWith(".jar"));
-      if (jars != null) {
-        LOGGER.info("Found {} JAR files in plugin:", jars.length);
-        for (java.io.File jar : jars) {
-          String name = jar.getName();
-          if (name.contains("hadoop") || name.contains("jackson") || name.contains("aws")) {
-            LOGGER.info("  🔍 DEPENDENCY: {}", name);
-          }
-        }
+      // Check if the distribution exists, if not build it first
+      if (!new java.io.File(pluginZipPath).exists()) {
+        LOGGER.info("Plugin distribution not found, building it...");
+        buildPluginDistribution(projectRoot);
       }
+
+      // Upload ZIP to S3Mock - NRTSearch will download and extract it automatically
+      java.io.File zipFile = new java.io.File(pluginZipPath);
+      String s3Key = "plugins/paimon-plugin-0.1.0-SNAPSHOT.zip";
+
+      LOGGER.info("Uploading plugin ZIP ({} bytes) to S3Mock at key: {}", zipFile.length(), s3Key);
+
+      getS3Client().putObject(getS3BucketName(), s3Key, zipFile);
+
+      LOGGER.info("Plugin ZIP uploaded to S3Mock successfully");
+      LOGGER.info("NRTSearch will download from: s3://{}/{}", getS3BucketName(), s3Key);
+
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to setup plugin in S3Mock", e);
     }
-    LOGGER.info("===================================");
   }
 
   private void buildPluginDistribution(String projectRoot) throws Exception {
-    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":paimon-plugin:distTar");
+    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":paimon-plugin:distZip");
     pb.directory(
         new java.io.File(projectRoot).getParentFile()); // Go up to nrtsearch-ingestion-plugins
     pb.inheritIO(); // Show build output
@@ -143,74 +114,27 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
     }
   }
 
-  private void extractPluginDistribution(String tarPath, Path targetDir) throws Exception {
-    LOGGER.info("Extracting plugin from {} to {}", tarPath, targetDir);
-
-    // Extract the tar file
-    ProcessBuilder pb = new ProcessBuilder("tar", "-xf", tarPath, "-C", targetDir.toString());
-    Process process = pb.start();
-    int exitCode = process.waitFor();
-    if (exitCode != 0) {
-      throw new RuntimeException("Failed to extract plugin tar, exit code: " + exitCode);
-    }
-
-    // The tar extracts to paimon-plugin-0.1.0-SNAPSHOT/, we need to rename it to paimon-plugin/
-    Path extractedDir = targetDir.resolve("paimon-plugin-0.1.0-SNAPSHOT");
-    Path finalDir = targetDir.resolve("paimon-plugin");
-
-    if (extractedDir.toFile().exists()) {
-      // Rename from versioned directory to paimon-plugin directory
-      // Handle case where target directory might already exist
-      if (finalDir.toFile().exists()) {
-        LOGGER.info("Target directory already exists, removing: {}", finalDir);
-        deleteDirectory(finalDir.toFile());
-      }
-
-      if (!extractedDir.toFile().renameTo(finalDir.toFile())) {
-        throw new RuntimeException(
-            "Failed to rename plugin directory from " + extractedDir + " to " + finalDir);
-      }
-      LOGGER.info(
-          "Renamed plugin directory: {} -> {}", extractedDir.getFileName(), finalDir.getFileName());
-    } else {
-      throw new RuntimeException("Expected extracted directory not found: " + extractedDir);
-    }
-  }
-
-  private void deleteDirectory(java.io.File directory) {
-    if (directory.exists()) {
-      java.io.File[] files = directory.listFiles();
-      if (files != null) {
-        for (java.io.File file : files) {
-          if (file.isDirectory()) {
-            deleteDirectory(file);
-          } else {
-            file.delete();
-          }
-        }
-      }
-      directory.delete();
-    }
-  }
-
   @Test
   public void testPluginLoadsWithoutDependencyConflicts() {
     LOGGER.info("Testing that paimon-plugin loads correctly without dependency conflicts...");
 
-    // The NrtsearchTest base class will have loaded plugins during server startup
+    // The NrtsearchTest base class will have:
+    // 1. Downloaded the ZIP from S3Mock
+    // 2. Extracted it using ZipUtils.extractZip()
+    // 3. Found plugin-metadata.yaml and parsed it
+    // 4. Loaded PaimonIngestPlugin class from JARs
+    // 5. Created plugin instance without ClassNotFoundException
+    // 6. Registered plugin with server
     // If we get here without exceptions, the plugin loaded successfully!
 
-    // Critical test points:
-    // 1. Plugin directory was found and extracted ✓
-    // 2. plugin-metadata.yaml was parsed correctly ✓
-    // 3. PaimonIngestPlugin class was loaded from JAR ✓
-    // 4. Hadoop/Paimon dependencies didn't conflict with nrtSearch ✓
-    // 5. Jackson version conflicts didn't cause LinkageError ✓
-    // 6. Plugin constructor executed without ClassNotFoundException ✓
-    // 7. Plugin is now registered with the server ✓
+    // Critical production-matching test points:
+    // - S3 download → ZIP extraction → JAR loading (same as production)
+    // - Hadoop/Paimon dependencies didn't conflict with nrtSearch
+    // - Jackson version conflicts didn't cause LinkageError
+    // - Plugin constructor executed without dependency issues
 
     assertTrue("Plugin loaded successfully without dependency conflicts!", true);
-    LOGGER.info("paimon-plugin loaded successfully into nrtSearch server!");
+    LOGGER.info("paimon-plugin loaded successfully via S3Mock → ZIP extraction → JAR loading!");
     LOGGER.info("No Hadoop/Jackson dependency conflicts detected at plugin load time");
   }
 

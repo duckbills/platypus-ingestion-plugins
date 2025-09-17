@@ -1,5 +1,5 @@
-classname: com.yelp.nrtsearch.plugins.ingestion.kafka.KafkaIngestPlugin
-name: nrtsearch-kafka-ingestion
-version: 1.0.0
-description: Kafka ingestion plugin for nrtsearch
-server_version: 1.+
+classname: ${classname}
+name: ${name}
+version: ${version}
+description: ${description}
+server_version: ${server_version}

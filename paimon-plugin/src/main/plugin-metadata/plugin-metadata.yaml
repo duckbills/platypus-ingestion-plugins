@@ -1,5 +1,5 @@
-classname: com.yelp.nrtsearch.plugins.ingestion.paimon.PaimonIngestPlugin
-name: nrtsearch-paimon-ingestion
-version: 1.0.0
-description: Apache Paimon ingestion plugin for nrtsearch with Dynamic Shared Queue architecture
-server_version: 1.+
+classname: ${classname}
+name: ${name}
+version: ${version}
+description: ${description}
+server_version: ${server_version}

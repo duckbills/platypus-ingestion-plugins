@@ -1,0 +1,22 @@
+grant {
+  // needed to generate runtime classes
+  permission java.lang.RuntimePermission "createClassLoader";
+
+  // needed to find the classloader to load whitelisted classes from
+  permission java.lang.RuntimePermission "getClassLoader";
+
+  // needed for Paimon operations
+  permission java.lang.RuntimePermission "setContextClassLoader";
+
+  // needed for S3 and Hadoop filesystem operations
+  permission java.net.SocketPermission "*", "connect,resolve";
+  permission java.net.NetPermission "getProxySelector";
+
+  // needed for Paimon file system operations
+  permission java.io.FilePermission "<<ALL FILES>>", "read,write,delete";
+  permission java.lang.RuntimePermission "getFileSystemAttributes";
+
+  // needed for S3 operations
+  permission java.lang.RuntimePermission "accessDeclaredMembers";
+  permission java.lang.RuntimePermission "reflectionFactoryAccess";
+};

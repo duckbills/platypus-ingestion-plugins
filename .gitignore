@@ -31,3 +31,6 @@ build/
 
 # Mac OS
 .DS_Store
+
+# Environment files with sensitive data
+.env

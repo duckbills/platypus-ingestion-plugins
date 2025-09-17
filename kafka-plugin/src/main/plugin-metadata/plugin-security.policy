@@ -1,0 +1,16 @@
+grant {
+  // needed to generate runtime classes
+  permission java.lang.RuntimePermission "createClassLoader";
+
+  // needed to find the classloader to load whitelisted classes from
+  permission java.lang.RuntimePermission "getClassLoader";
+
+  // needed for Kafka consumer operations
+  permission java.lang.RuntimePermission "setContextClassLoader";
+
+  // needed for Kafka networking
+  permission java.net.SocketPermission "*", "connect,resolve";
+
+  // needed for Schema Registry client operations
+  permission java.net.NetPermission "getProxySelector";
+};
