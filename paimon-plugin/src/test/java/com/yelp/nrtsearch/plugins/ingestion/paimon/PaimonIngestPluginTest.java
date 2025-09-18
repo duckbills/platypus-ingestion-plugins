@@ -71,7 +71,8 @@ public class PaimonIngestPluginTest {
     NrtsearchConfig config = mock(NrtsearchConfig.class);
 
     Map<String, Object> paimonConfig = new HashMap<>();
-    paimonConfig.put("table.path", "test_db.test_table");
+    paimonConfig.put("database.name", "test_db");
+    paimonConfig.put("table.name", "test_table");
     paimonConfig.put("target.index.name", "test_index");
     paimonConfig.put("warehouse.path", "/tmp/paimon");
     paimonConfig.put("worker.threads", "4");

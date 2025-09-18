@@ -34,6 +34,8 @@ public class PaimonConfig {
   private static final int DEFAULT_QUEUE_CAPACITY = 10000;
 
   // Paimon table configuration
+  private final String databaseName;
+  private final String tableName;
   private final String tablePath;
   private final String targetIndexName;
   private final String warehousePath;
@@ -50,7 +52,9 @@ public class PaimonConfig {
 
   public PaimonConfig(Map<String, Object> config) {
     // Required configuration
-    this.tablePath = getRequiredString(config, "table.path");
+    this.databaseName = getRequiredString(config, "database.name");
+    this.tableName = getRequiredString(config, "table.name");
+    this.tablePath = this.databaseName + "." + this.tableName;
     this.targetIndexName = getRequiredString(config, "target.index.name");
     this.warehousePath = getRequiredString(config, "warehouse.path");
 
@@ -67,7 +71,9 @@ public class PaimonConfig {
     this.fieldMapping = fieldMappingRaw;
 
     LOGGER.info(
-        "Initialized PaimonConfig: tablePath={}, targetIndex={}, workerThreads={}, batchSize={}",
+        "Initialized PaimonConfig: database={}, table={}, tablePath={}, targetIndex={}, workerThreads={}, batchSize={}",
+        databaseName,
+        tableName,
         tablePath,
         targetIndexName,
         workerThreads,
@@ -115,6 +121,14 @@ public class PaimonConfig {
   }
 
   // Getters
+  public String getDatabaseName() {
+    return databaseName;
+  }
+
+  public String getTableName() {
+    return tableName;
+  }
+
   public String getTablePath() {
     return tablePath;
   }

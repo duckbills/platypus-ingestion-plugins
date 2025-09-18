@@ -98,13 +98,19 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
   protected void addNrtsearchConfigs(Map<String, Object> config) {
     super.addNrtsearchConfigs(config); // Get the defaults including plugin setup
 
+    // Use unique serviceName per test run to avoid consumer ID conflicts
+    String uniqueServiceName =
+        "test-service-" + System.currentTimeMillis() + "-" + Thread.currentThread().getId();
+    config.put("serviceName", uniqueServiceName);
+
     // Add plugin configuration for Paimon
     Map<String, Object> pluginConfigs = new HashMap<>();
     Map<String, Object> ingestionConfigs = new HashMap<>();
     Map<String, Object> paimonConfigs = new HashMap<>();
 
     paimonConfigs.put("warehouse.path", warehousePath);
-    paimonConfigs.put("table.path", DATABASE_NAME + "." + TABLE_NAME);
+    paimonConfigs.put("database.name", DATABASE_NAME);
+    paimonConfigs.put("table.name", TABLE_NAME);
     paimonConfigs.put("target.index.name", INDEX_NAME);
     paimonConfigs.put("worker.threads", 2);
     paimonConfigs.put("batch.size", 10);
@@ -169,36 +175,93 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
   }
 
   static void writeTestDataToPaimon() throws Exception {
-    LOGGER.info("Writing test data to Paimon table...");
+    LOGGER.info("Writing minimal dataset for split ordering test...");
 
     Identifier identifier = Identifier.create(DATABASE_NAME, TABLE_NAME);
     Table table = catalog.getTable(identifier);
-
-    // Create batch writer
     BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
-    BatchTableWrite write = writeBuilder.newWrite();
 
-    // Create test documents
-    List<GenericRow> testDocs = createTestDocuments();
+    // SNAPSHOT 1: Initial writes to multiple buckets with some sharing same bucket
+    LOGGER.info("Writing snapshot 1: Initial documents");
+    BatchTableWrite write1 = writeBuilder.newWrite();
 
-    // Write documents with bucket determined by primary key hash (ensures same keys go to same
-    // bucket)
-    final int numBuckets = 3;
-    for (GenericRow doc : testDocs) {
-      String id = doc.getField(0).toString(); // id is the primary key
-      int bucket = Math.abs(id.hashCode()) % numBuckets;
-      write.write(doc, bucket);
-      LOGGER.debug("Wrote document: {}", doc.getField(0)); // id field
-    }
+    GenericRow user123v1 =
+        createVersionedDoc("user123", "v1", "Initial data for user123", "initial");
+    GenericRow user456v1 =
+        createVersionedDoc("user456", "v1", "Initial data for user456", "initial");
+    GenericRow user789v1 =
+        createVersionedDoc("user789", "v1", "Initial data for user789", "initial");
 
-    // Prepare commit
-    List<CommitMessage> messages = write.prepareCommit();
+    // Force specific bucket assignment to ensure we get shared buckets
+    write1.write(user123v1, 0); // bucket 0
+    write1.write(user456v1, 1); // bucket 1
+    write1.write(user789v1, 0); // bucket 0 (same as user123 - creates multiple docs in same bucket)
 
-    // Commit the batch
-    BatchTableCommit commit = writeBuilder.newCommit();
-    commit.commit(messages);
+    List<CommitMessage> messages1 = write1.prepareCommit();
+    BatchTableCommit commit1 = writeBuilder.newCommit();
+    commit1.commit(messages1);
+    write1.close();
 
-    LOGGER.info("Successfully wrote {} documents to Paimon table", testDocs.size());
+    LOGGER.info("Snapshot 1: user123+user789 in bucket0, user456 in bucket1");
+    Thread.sleep(1000);
+
+    // SNAPSHOT 2: Updates to existing users + new user in same bucket
+    LOGGER.info("Writing snapshot 2: Updates + new user");
+    BatchTableWrite write2 = writeBuilder.newWrite();
+
+    GenericRow user123v2 =
+        createVersionedDoc("user123", "v2", "Updated data for user123", "updated");
+    GenericRow user456v2 =
+        createVersionedDoc("user456", "v2", "Updated data for user456", "updated");
+    GenericRow user999v1 = createVersionedDoc("user999", "v1", "New user999 initial data", "new");
+
+    // Same bucket assignments as their previous versions + new user in bucket 0
+    write2.write(user123v2, 0); // bucket 0 (UPDATE)
+    write2.write(user456v2, 1); // bucket 1 (UPDATE)
+    write2.write(user999v1, 0); // bucket 0 (NEW - creates multiple files in bucket 0)
+
+    List<CommitMessage> messages2 = write2.prepareCommit();
+    BatchTableCommit commit2 = writeBuilder.newCommit();
+    commit2.commit(messages2);
+    write2.close();
+
+    LOGGER.info("Snapshot 2: user123+user999 in bucket0, user456 in bucket1");
+    Thread.sleep(1000);
+
+    // SNAPSHOT 3: Final update to user123 only
+    LOGGER.info("Writing snapshot 3: Final user123 update");
+    BatchTableWrite write3 = writeBuilder.newWrite();
+
+    GenericRow user123v3 =
+        createVersionedDoc("user123", "v3", "Final version for user123", "final");
+
+    write3.write(user123v3, 0); // bucket 0 (FINAL UPDATE)
+
+    List<CommitMessage> messages3 = write3.prepareCommit();
+    BatchTableCommit commit3 = writeBuilder.newCommit();
+    commit3.commit(messages3);
+    write3.close();
+
+    LOGGER.info("Successfully wrote 3 snapshots with realistic split distribution");
+    LOGGER.info("Expected splits: s1/b0, s1/b1, s2/b0, s2/b1, s3/b0");
+    LOGGER.info("Test case: user123 should have final version v3 if ordering works correctly");
+  }
+
+  /** Helper method to create versioned documents for split ordering test */
+  private static GenericRow createVersionedDoc(
+      String userId, String version, String content, String category) {
+    return GenericRow.of(
+        BinaryString.fromString(userId),
+        BinaryString.fromString("User " + userId + " Document " + version),
+        BinaryString.fromString(content),
+        BinaryString.fromString(category),
+        Double.parseDouble(version.substring(1)) + 3.0, // v1=4.0, v2=5.0, v3=6.0
+        new org.apache.paimon.data.GenericArray(
+            new BinaryString[] {
+              BinaryString.fromString("test"), BinaryString.fromString("version" + version)
+            }),
+        BinaryString.fromString("Test Author"),
+        BinaryString.fromString("2024-01-0" + version.substring(1))); // v1->01, v2->02, v3->03
   }
 
   static List<GenericRow> createTestDocuments() {
@@ -391,8 +454,8 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
               SearchResponse response = getClient().getBlockingStub().search(searchRequest);
               LOGGER.info("Search returned {} hits", response.getTotalHits().getValue());
 
-              // Verify we got all 3 documents
-              assertEquals(3, response.getTotalHits().getValue());
+              // Verify we got all 4 documents (user123, user456, user789, user999)
+              assertEquals(4, response.getTotalHits().getValue());
 
               // Verify document content
               Map<String, SearchResponse.Hit> hitsByKey = new HashMap<>();
@@ -401,29 +464,35 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
                 hitsByKey.put(id, hit);
               }
 
-              // Verify doc1
-              SearchResponse.Hit doc1Hit = hitsByKey.get("doc1");
-              assertNotNull(doc1Hit);
-              assertEquals("Machine Learning Basics", getFieldValue(doc1Hit, "title"));
-              assertEquals("technology", getFieldValue(doc1Hit, "category"));
-              assertEquals("4.5", getFieldValue(doc1Hit, "rating"));
-              assertEquals("Alice Smith", getFieldValue(doc1Hit, "metadata_author"));
+              // Verify user123 (final version v3)
+              SearchResponse.Hit user123Hit = hitsByKey.get("user123");
+              assertNotNull(user123Hit);
+              assertEquals("User user123 Document v3", getFieldValue(user123Hit, "title"));
+              assertEquals("final", getFieldValue(user123Hit, "category"));
+              assertEquals("6.0", getFieldValue(user123Hit, "rating"));
+              assertEquals("Test Author", getFieldValue(user123Hit, "metadata_author"));
 
-              // Verify doc2
-              SearchResponse.Hit doc2Hit = hitsByKey.get("doc2");
-              assertNotNull(doc2Hit);
-              assertEquals("Cooking Pasta Perfectly", getFieldValue(doc2Hit, "title"));
-              assertEquals("cooking", getFieldValue(doc2Hit, "category"));
-              assertEquals("Chef Mario", getFieldValue(doc2Hit, "metadata_author"));
+              // Verify user456 (final version v2)
+              SearchResponse.Hit user456Hit = hitsByKey.get("user456");
+              assertNotNull(user456Hit);
+              assertEquals("User user456 Document v2", getFieldValue(user456Hit, "title"));
+              assertEquals("updated", getFieldValue(user456Hit, "category"));
+              assertEquals("Test Author", getFieldValue(user456Hit, "metadata_author"));
 
-              // Verify doc3
-              SearchResponse.Hit doc3Hit = hitsByKey.get("doc3");
-              assertNotNull(doc3Hit);
-              assertEquals("Travel Guide: Tokyo", getFieldValue(doc3Hit, "title"));
-              assertEquals("travel", getFieldValue(doc3Hit, "category"));
+              // Verify user789 (version v1 only)
+              SearchResponse.Hit user789Hit = hitsByKey.get("user789");
+              assertNotNull(user789Hit);
+              assertEquals("User user789 Document v1", getFieldValue(user789Hit, "title"));
+              assertEquals("initial", getFieldValue(user789Hit, "category"));
+
+              // Verify user999 (version v1 only)
+              SearchResponse.Hit user999Hit = hitsByKey.get("user999");
+              assertNotNull(user999Hit);
+              assertEquals("User user999 Document v1", getFieldValue(user999Hit, "title"));
+              assertEquals("new", getFieldValue(user999Hit, "category"));
             });
 
-    LOGGER.info("✅ End-to-end ingestion test passed!");
+    LOGGER.info("End-to-end ingestion test passed!");
   }
 
   @Test
@@ -448,7 +517,7 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
                               .setTermQuery(
                                   TermQuery.newBuilder()
                                       .setField("category")
-                                      .setTextValue("technology")
+                                      .setTextValue("final")
                                       .build())
                               .build())
                       .addRetrieveFields("id")
@@ -458,8 +527,8 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
               SearchResponse response = getClient().getBlockingStub().search(searchRequest);
 
               assertEquals(1, response.getTotalHits().getValue());
-              assertEquals("doc1", getFieldValue(response.getHits(0), "id"));
-              assertEquals("Machine Learning Basics", getFieldValue(response.getHits(0), "title"));
+              assertEquals("user123", getFieldValue(response.getHits(0), "id"));
+              assertEquals("User user123 Document v3", getFieldValue(response.getHits(0), "title"));
             });
   }
 
@@ -485,7 +554,7 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
                               .setMatchQuery(
                                   MatchQuery.newBuilder()
                                       .setField("content")
-                                      .setQuery("pasta cooking")
+                                      .setQuery("user123 Final")
                                       .build())
                               .build())
                       .addRetrieveFields("id")
@@ -495,11 +564,81 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
               SearchResponse response = getClient().getBlockingStub().search(searchRequest);
 
               assertTrue(response.getTotalHits().getValue() > 0);
-              // Should find the cooking document
-              boolean foundCookingDoc =
+              // Should find the user123 document
+              boolean foundUser123Doc =
                   response.getHitsList().stream()
-                      .anyMatch(hit -> "doc2".equals(getFieldValue(hit, "id")));
-              assertTrue(foundCookingDoc);
+                      .anyMatch(hit -> "user123".equals(getFieldValue(hit, "id")));
+              assertTrue(foundUser123Doc);
+            });
+  }
+
+  @Test
+  public void testMultiSnapshotOrdering() throws Exception {
+    LOGGER.info("Testing multi-snapshot split ordering...");
+
+    // Setup index and schema first
+    setupIndexAndSchema();
+
+    // The writeTestDataToPaimon() method already created multi-snapshot test data
+
+    // Wait for all snapshots to be processed
+    await()
+        .atMost(45, TimeUnit.SECONDS)
+        .pollInterval(Duration.ofSeconds(2))
+        .untilAsserted(
+            () -> {
+              SearchRequest searchRequest =
+                  SearchRequest.newBuilder()
+                      .setIndexName(INDEX_NAME)
+                      .setStartHit(0)
+                      .setTopHits(10)
+                      .setQuery(
+                          Query.newBuilder()
+                              .setMatchAllQuery(MatchAllQuery.newBuilder().build())
+                              .build())
+                      .addRetrieveFields("id")
+                      .addRetrieveFields("title")
+                      .addRetrieveFields("content")
+                      .addRetrieveFields("category")
+                      .addRetrieveFields("rating")
+                      .build();
+
+              SearchResponse response = getClient().getBlockingStub().search(searchRequest);
+              LOGGER.info(
+                  "Multi-snapshot test: found {} documents", response.getTotalHits().getValue());
+
+              // Should have at least 5 documents (user123, user456, user789, user999 + any others)
+              assertTrue(
+                  "Should have multiple documents from snapshots",
+                  response.getTotalHits().getValue() >= 4);
+
+              // Find user123 who had multiple versions across snapshots
+              SearchResponse.Hit user123Doc = null;
+              for (SearchResponse.Hit hit : response.getHitsList()) {
+                if ("user123".equals(getFieldValue(hit, "id"))) {
+                  user123Doc = hit;
+                  break;
+                }
+              }
+
+              // Verify user123 has the final version (v3) if split ordering worked correctly
+              assertNotNull("Should find user123 document", user123Doc);
+              assertEquals(
+                  "user123 should have final version content",
+                  "Final version for user123",
+                  getFieldValue(user123Doc, "content"));
+              assertEquals(
+                  "user123 should have final title",
+                  "User user123 Document v3",
+                  getFieldValue(user123Doc, "title"));
+              assertEquals(
+                  "user123 should have final category",
+                  "final",
+                  getFieldValue(user123Doc, "category"));
+              assertEquals(
+                  "user123 should have final rating", "6.0", getFieldValue(user123Doc, "rating"));
+
+              LOGGER.info("Multi-snapshot ordering verified: document has latest version");
             });
   }
 

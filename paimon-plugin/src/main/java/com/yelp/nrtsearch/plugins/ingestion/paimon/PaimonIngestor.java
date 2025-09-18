@@ -30,13 +30,15 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
+import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.reader.RecordReader;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.ReadBuilder;
@@ -53,6 +55,7 @@ import org.slf4j.LoggerFactory;
  */
 public class PaimonIngestor extends AbstractIngestor {
   private static final Logger LOGGER = LoggerFactory.getLogger(PaimonIngestor.class);
+  private final NrtsearchConfig nrtSearchConfig;
 
   private BlockingQueue<BucketWork> workQueue;
   private final ExecutorService executorService;
@@ -66,9 +69,6 @@ public class PaimonIngestor extends AbstractIngestor {
   private TableRead tableRead;
   private StreamTableScan streamTableScan;
 
-  // Checkpoint management: TODO store this on remote storage for persistence
-  private final AtomicReference<Long> lastCheckpointId = new AtomicReference<>(null);
-
   public PaimonIngestor(
       NrtsearchConfig config, ExecutorService executorService, PaimonConfig paimonConfig) {
     super(config);
@@ -76,6 +76,7 @@ public class PaimonIngestor extends AbstractIngestor {
     this.workQueue = new LinkedBlockingQueue<>(paimonConfig.getQueueCapacity());
     this.running = new AtomicBoolean(false);
     this.paimonConfig = paimonConfig;
+    this.nrtSearchConfig = config;
     this.converter = new PaimonToAddDocumentConverter(paimonConfig);
 
     LOGGER.info(
@@ -203,8 +204,10 @@ public class PaimonIngestor extends AbstractIngestor {
     String database = pathParts[0];
     String tableName = pathParts[1];
 
-    this.table = catalog.getTable(org.apache.paimon.catalog.Identifier.create(database, tableName));
-
+    Table baseTable = catalog.getTable(Identifier.create(database, tableName));
+    Map<String, String> consumerOptions = new HashMap<>();
+    consumerOptions.put(CoreOptions.CONSUMER_ID.key(), nrtSearchConfig.getServiceName());
+    this.table = ((FileStoreTable) baseTable).copy(consumerOptions);
     // Initialize converter with table schema
     converter.setRowType(table.rowType());
 
@@ -225,14 +228,6 @@ public class PaimonIngestor extends AbstractIngestor {
 
     while (running.get()) {
       try {
-        // Restore from last checkpoint if available
-        // TODO: make checkpointing persistent e.g. checkpoint and restore from s3
-        Long prevCheckpoint = lastCheckpointId.get();
-        if (prevCheckpoint != null) {
-          streamTableScan.restore(prevCheckpoint);
-          LOGGER.debug("Restored stream table scan from checkpoint: {}", prevCheckpoint);
-        }
-
         // Scan for new splits since last checkpoint
         List<Split> incrementalSplits = streamTableScan.plan().splits();
 
@@ -241,10 +236,10 @@ public class PaimonIngestor extends AbstractIngestor {
         if (!incrementalSplits.isEmpty()) {
           // Group splits by bucket for ordered processing
           Map<Integer, List<Split>> splitsByBucket = groupSplitsByBucket(incrementalSplits);
-          long newPaimonCheckpointId = streamTableScan.checkpoint(); // Get checkpoint ID upfront
+          long nextSnapshot = streamTableScan.checkpoint(); // Get the nextSnapshot ID upfront
 
           // PHASE 1: PREPARE BATCH - Create coordination object
-          InFlightBatch batch = new InFlightBatch(newPaimonCheckpointId, splitsByBucket.size());
+          InFlightBatch batch = new InFlightBatch(nextSnapshot, splitsByBucket.size());
 
           // PHASE 2: DISPATCH WORK - Add all work to queue with batch reference
           for (Map.Entry<Integer, List<Split>> entry : splitsByBucket.entrySet()) {
@@ -274,17 +269,16 @@ public class PaimonIngestor extends AbstractIngestor {
           LOGGER.info(
               "Coordinator dispatched {} buckets for checkpoint {}. Awaiting completion...",
               splitsByBucket.size(),
-              newPaimonCheckpointId);
+              nextSnapshot);
 
           batch.awaitCompletion();
 
-          LOGGER.info("All workers completed work for checkpoint {}", newPaimonCheckpointId);
+          LOGGER.info("All workers completed work for checkpoint {}", nextSnapshot);
 
           // PHASE 4: COMMIT CHECKPOINT - Only happens after all work is done
-          lastCheckpointId.set(newPaimonCheckpointId);
-          // TODO: Persist to S3 for crash recovery
+          streamTableScan.notifyCheckpointComplete(nextSnapshot);
 
-          LOGGER.debug("Successfully committed Paimon checkpoint {}", newPaimonCheckpointId);
+          LOGGER.info("Successfully committed Paimon checkpoint {}", nextSnapshot);
         }
 
         // Sleep before next scan
@@ -529,15 +523,31 @@ public class PaimonIngestor extends AbstractIngestor {
     return bucketMap;
   }
 
-  /** Sort splits by sequence number to maintain ordering for same keys within a bucket. */
+  /** Sort splits by snapshot ID first, then sequence number to maintain temporal ordering. */
   private List<Split> sortSplitsBySequence(List<Split> splits) {
     List<Split> sortedSplits = new ArrayList<>(splits);
 
-    // Sort by sequence number from DataSplit for ordering guarantees
+    // Sort by snapshot ID first (temporal ordering), then by sequence number (LSM ordering)
     sortedSplits.sort(
         (s1, s2) -> {
-          long seq1 = getSequenceNumber(s1);
-          long seq2 = getSequenceNumber(s2);
+          if (!(s1 instanceof DataSplit) || !(s2 instanceof DataSplit)) {
+            return 0; // Non-DataSplit types are equal
+          }
+
+          DataSplit ds1 = (DataSplit) s1;
+          DataSplit ds2 = (DataSplit) s2;
+
+          // Primary sort: snapshot ID for temporal consistency across snapshots
+          int snapshotCompare = Long.compare(ds1.snapshotId(), ds2.snapshotId());
+          if (snapshotCompare != 0) {
+            return snapshotCompare;
+          }
+
+          // Secondary sort: min sequence number within same snapshot for LSM ordering
+          long seq1 =
+              ds1.dataFiles().stream().mapToLong(file -> file.minSequenceNumber()).min().orElse(0L);
+          long seq2 =
+              ds2.dataFiles().stream().mapToLong(file -> file.minSequenceNumber()).min().orElse(0L);
           return Long.compare(seq1, seq2);
         });
 
@@ -553,20 +563,6 @@ public class PaimonIngestor extends AbstractIngestor {
     }
     // Default to bucket 0 for non-DataSplit types
     return 0;
-  }
-
-  /** Extract sequence number from a Paimon split for ordering. */
-  private long getSequenceNumber(Split split) {
-    if (split instanceof DataSplit) {
-      DataSplit dataSplit = (DataSplit) split;
-      // Get minimum sequence number from DataSplit for ordering
-      // This ensures ordering for same keys across multiple splits in same bucket
-      return dataSplit.dataFiles().stream()
-          .mapToLong(file -> file.minSequenceNumber())
-          .min()
-          .orElse(0L);
-    }
-    return 0L;
   }
 
   /**
@@ -603,10 +599,6 @@ public class PaimonIngestor extends AbstractIngestor {
 
   protected AtomicBoolean getRunning() {
     return running;
-  }
-
-  protected Long getLastCheckpointId() {
-    return lastCheckpointId.get();
   }
 
   protected BlockingQueue<BucketWork> getWorkQueue() {

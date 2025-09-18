@@ -411,7 +411,7 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
               assertEquals("travel", getFieldValue(doc3Hit, "category"));
             });
 
-    LOGGER.info("✅ End-to-end ingestion test passed!");
+    LOGGER.info("End-to-end ingestion test passed!");
   }
 
   @Test

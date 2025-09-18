@@ -27,12 +27,15 @@ public class PaimonConfigTest {
   @Test
   public void testRequiredConfiguration() {
     Map<String, Object> config = new HashMap<>();
-    config.put("table.path", "test_db.test_table");
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
     config.put("target.index.name", "test_index");
     config.put("warehouse.path", "/tmp/paimon");
 
     PaimonConfig paimonConfig = new PaimonConfig(config);
 
+    assertEquals("test_db", paimonConfig.getDatabaseName());
+    assertEquals("test_table", paimonConfig.getTableName());
     assertEquals("test_db.test_table", paimonConfig.getTablePath());
     assertEquals("test_index", paimonConfig.getTargetIndexName());
     assertEquals("/tmp/paimon", paimonConfig.getWarehousePath());
@@ -41,7 +44,8 @@ public class PaimonConfigTest {
   @Test
   public void testOptionalConfiguration() {
     Map<String, Object> config = new HashMap<>();
-    config.put("table.path", "test_db.test_table");
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
     config.put("target.index.name", "test_index");
     config.put("warehouse.path", "/tmp/paimon");
     config.put("worker.threads", "8");
@@ -58,7 +62,8 @@ public class PaimonConfigTest {
   @Test
   public void testFieldMapping() {
     Map<String, Object> config = new HashMap<>();
-    config.put("table.path", "test_db.test_table");
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
     config.put("target.index.name", "test_index");
     config.put("warehouse.path", "/tmp/paimon");
 
@@ -74,7 +79,8 @@ public class PaimonConfigTest {
   @Test
   public void testNoFieldMapping() {
     Map<String, Object> config = new HashMap<>();
-    config.put("table.path", "test_db.test_table");
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
     config.put("target.index.name", "test_index");
     config.put("warehouse.path", "/tmp/paimon");
 
@@ -83,11 +89,26 @@ public class PaimonConfigTest {
     assertNull(paimonConfig.getFieldMapping());
   }
 
+  @Test
+  public void testDatabaseNameWithDots() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "yelp.business.data");
+    config.put("table.name", "reviews");
+    config.put("target.index.name", "test_index");
+    config.put("warehouse.path", "/tmp/paimon");
+
+    PaimonConfig paimonConfig = new PaimonConfig(config);
+
+    assertEquals("yelp.business.data", paimonConfig.getDatabaseName());
+    assertEquals("reviews", paimonConfig.getTableName());
+    assertEquals("yelp.business.data.reviews", paimonConfig.getTablePath());
+  }
+
   @Test(expected = IllegalArgumentException.class)
   public void testMissingRequiredConfig() {
     Map<String, Object> config = new HashMap<>();
-    config.put("table.path", "test_db.test_table");
-    // Missing target.index.name and warehouse.path
+    config.put("database.name", "test_db");
+    // Missing table.name, target.index.name and warehouse.path
 
     new PaimonConfig(config);
   }

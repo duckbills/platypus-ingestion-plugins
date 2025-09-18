@@ -64,7 +64,8 @@ public class PaimonToAddDocumentConverterTest {
   @Before
   public void setUp() {
     Map<String, Object> configMap = new HashMap<>();
-    configMap.put("table.path", "test_db.test_table");
+    configMap.put("database.name", "test_db");
+    configMap.put("table.name", "test_table");
     configMap.put("target.index.name", INDEX_NAME);
     configMap.put("warehouse.path", "s3://test-bucket/test-warehouse");
 
@@ -282,7 +283,8 @@ public class PaimonToAddDocumentConverterTest {
   public void testFieldMapping() throws UnrecoverableConversionException {
     // Create config with field mapping
     Map<String, Object> configMap = new HashMap<>();
-    configMap.put("table.path", "test_db.test_table");
+    configMap.put("database.name", "test_db");
+    configMap.put("table.name", "test_table");
     configMap.put("target.index.name", INDEX_NAME);
     configMap.put("warehouse.path", "s3://test-bucket/test-warehouse");
 

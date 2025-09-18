@@ -58,7 +58,7 @@ upload-dev: dist
 	@echo "Uploading to dev bucket: $(S3_DEV_BUCKET)"
 	aws s3 cp $(KAFKA_ARTIFACT_FILE_PATH) $(S3_DEV_BUCKET) || exit $$?
 	aws s3 cp $(PAIMON_ARTIFACT_FILE_PATH) $(S3_DEV_BUCKET) || exit $$?
-	@echo "✅ Successfully uploaded to dev environment:"
+	@echo "  Successfully uploaded to dev environment:"
 	@echo "  - kafka-plugin-$(ARTIFACT_VERSION).zip"
 	@echo "  - paimon-plugin-$(ARTIFACT_VERSION).zip"
 
@@ -86,7 +86,7 @@ publish: dist
 	aws s3 cp $(PAIMON_ARTIFACT_FILE_PATH) $(S3_PNW_BUCKET) || exit $$?
 	aws s3 cp $(PAIMON_ARTIFACT_FILE_PATH) $(S3_NOVA_BUCKET) || exit $$?
 
-	@echo "✅ Successfully published to all environments:"
+	@echo " Successfully published to all environments:"
 	@echo "  - kafka-plugin-$(ARTIFACT_VERSION).zip"
 	@echo "  - paimon-plugin-$(ARTIFACT_VERSION).zip"
 

@@ -233,7 +233,6 @@ public class PaimonIngestorTest {
     // Assert
     // The doAnswer block handles the interaction, so we just verify the outcome.
     verify(mockWorkQueue, times(1)).offer(any(PaimonIngestor.BucketWork.class), anyLong(), any());
-    assertEquals(Long.valueOf(newCheckpointId), ingestor.getLastCheckpointId());
   }
 
   @Test
@@ -255,7 +254,6 @@ public class PaimonIngestorTest {
     // Assert
     verify(mockWorkQueue, never()).offer(any(), anyLong(), any());
     verify(mockStreamTableScan, never()).checkpoint();
-    assertEquals(null, ingestor.getLastCheckpointId());
   }
 
   @Test
@@ -366,7 +364,6 @@ public class PaimonIngestorTest {
     // Assert
     verify(mockStreamTableScan, times(2)).plan();
     verify(mockWorkQueue, never()).offer(any(), anyLong(), any());
-    assertEquals(null, ingestor.getLastCheckpointId());
   }
 
   // ============================================================================

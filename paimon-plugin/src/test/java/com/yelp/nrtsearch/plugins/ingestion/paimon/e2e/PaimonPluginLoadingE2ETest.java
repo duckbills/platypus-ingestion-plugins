@@ -59,7 +59,8 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
 
     // Dummy config - plugin won't actually try to connect during server startup
     paimonConfigs.put("warehouse.path", "/tmp/test-warehouse");
-    paimonConfigs.put("table.path", "test_db.test_table");
+    paimonConfigs.put("database.name", "test_db");
+    paimonConfigs.put("table.name", "test_table");
     paimonConfigs.put("target.index.name", "test-index");
     paimonConfigs.put("worker.threads", 1);
     paimonConfigs.put("batch.size", 10);

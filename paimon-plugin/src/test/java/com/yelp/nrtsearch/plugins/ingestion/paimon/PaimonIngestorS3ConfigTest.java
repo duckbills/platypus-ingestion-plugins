@@ -49,7 +49,8 @@ public class PaimonIngestorS3ConfigTest {
 
     Map<String, Object> paimonConfig = new HashMap<>();
     paimonConfig.put("warehouse.path", "s3a://test-bucket/warehouse/");
-    paimonConfig.put("table.path", "db.table");
+    paimonConfig.put("database.name", "db");
+    paimonConfig.put("table.name", "table");
     paimonConfig.put("target.index.name", "test-index");
     paimonConfig.put("s3", s3Config);
 
@@ -98,7 +99,8 @@ public class PaimonIngestorS3ConfigTest {
 
     Map<String, Object> paimonConfig = new HashMap<>();
     paimonConfig.put("warehouse.path", "s3a://prod-bucket/warehouse/");
-    paimonConfig.put("table.path", "db.table");
+    paimonConfig.put("database.name", "db");
+    paimonConfig.put("table.name", "table");
     paimonConfig.put("target.index.name", "prod-index");
     paimonConfig.put("s3", s3Config);
 
@@ -141,7 +143,8 @@ public class PaimonIngestorS3ConfigTest {
     // Setup production S3 warehouse WITHOUT any s3 config block (typical production)
     Map<String, Object> paimonConfig = new HashMap<>();
     paimonConfig.put("warehouse.path", "s3a://prod-bucket/warehouse/");
-    paimonConfig.put("table.path", "db.table");
+    paimonConfig.put("database.name", "db");
+    paimonConfig.put("table.name", "table");
     paimonConfig.put("target.index.name", "prod-index");
     // NO s3 configuration block - relies on IAM roles
 
@@ -189,7 +192,8 @@ public class PaimonIngestorS3ConfigTest {
     // Setup configuration without S3 block
     Map<String, Object> paimonConfig = new HashMap<>();
     paimonConfig.put("warehouse.path", "file:///tmp/warehouse/");
-    paimonConfig.put("table.path", "db.table");
+    paimonConfig.put("database.name", "db");
+    paimonConfig.put("table.name", "table");
     paimonConfig.put("target.index.name", "local-index");
     // No s3 configuration
 
