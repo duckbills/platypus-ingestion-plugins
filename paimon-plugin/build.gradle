@@ -7,10 +7,20 @@ dependencies {
     implementation 'org.apache.paimon:paimon-core:1.2.0'
     implementation 'org.apache.paimon:paimon-common:1.2.0'
     implementation 'org.apache.paimon:paimon-format:1.2.0'
-    
-    // Hadoop dependencies for Paimon
+    implementation 'org.apache.paimon:paimon-s3:1.2.0'
+
+    // CONSISTENT Hadoop dependencies for Paimon S3A support
+    // All must be the same version to avoid conflicts.
+    implementation 'org.apache.hadoop:hadoop-common:3.3.6'
     implementation 'org.apache.hadoop:hadoop-client-api:3.3.6'
     implementation 'org.apache.hadoop:hadoop-client-runtime:3.3.6'
+    implementation 'org.apache.hadoop:hadoop-aws:3.3.6'
+
+    implementation platform('com.amazonaws:aws-java-sdk-bom:1.12.768')
+    // AWS SDK BOM manages versions
+    implementation 'com.amazonaws:aws-java-sdk-s3'
+    implementation 'com.amazonaws:aws-java-sdk-core'
+    implementation 'com.amazonaws:aws-java-sdk-sts'
     
     // Logging
     implementation libs.slf4j.api
@@ -95,7 +105,7 @@ task e2eTest(type: Test) {
     testClassesDirs = sourceSets.e2e.output.classesDirs
     classpath = sourceSets.e2e.runtimeClasspath
     useJUnitPlatform()
-    jvmArgs '-XX:MaxDirectMemorySize=1024m'
+    jvmArgs '-Xmx4g', '-XX:MaxDirectMemorySize=2048m'
     testLogging {
         events "passed", "skipped", "failed"
         exceptionFormat "full"
