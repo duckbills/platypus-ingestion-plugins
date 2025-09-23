@@ -1,4 +1,8 @@
 // Plugin configurations are inherited from root project
+plugins {
+    id 'com.gradleup.shadow' version '8.3.0'
+}
+
 dependencies {
     // NRTSearch server dependencies
     implementation libs.nrtsearch.server
@@ -62,8 +66,9 @@ test {
 distributions {
     main {
         contents {
-            from(jar)
-            from(configurations.runtimeClasspath)
+            // Use the single, self-contained uber JAR instead of many individual JARs
+            from(shadowJar)
+
             from('src/main/plugin-metadata/plugin-metadata.yaml') {
                 expand(
                         classname: 'com.yelp.nrtsearch.plugins.ingestion.paimon.PaimonIngestPlugin',
@@ -113,4 +118,21 @@ task e2eTest(type: Test) {
         exceptionFormat "full"
         showStandardStreams = true
     }
+}
+
+shadowJar {
+    // Enable ZIP64 support for large archives with >65535 entries
+    zip64 = true
+
+    // This merges META-INF/services files, which is critical for Hadoop's FileSystem discovery
+    mergeServiceFiles()
+
+    // Relocate packages to prevent classpath conflicts with the main Nrtsearch application.
+    // This creates a private copy of these libraries for the plugin's use only.
+    relocate 'org.apache.paimon', 'com.yelp.nrtsearch.plugins.paimon.shaded.paimon'
+    relocate 'org.apache.hadoop', 'com.yelp.nrtsearch.plugins.paimon.shaded.hadoop'
+    relocate 'com.amazonaws', 'com.yelp.nrtsearch.plugins.paimon.shaded.amazonaws'
+    relocate 'com.fasterxml.jackson', 'com.yelp.nrtsearch.plugins.paimon.shaded.jackson'
+    relocate 'org.apache.http', 'com.yelp.nrtsearch.plugins.paimon.shaded.http'
+    relocate 'joda-time', 'com.yelp.nrtsearch.plugins.paimon.shaded.joda'
 }
