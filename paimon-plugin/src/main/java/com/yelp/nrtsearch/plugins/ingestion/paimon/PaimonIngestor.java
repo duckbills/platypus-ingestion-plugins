@@ -191,21 +191,9 @@ public class PaimonIngestor extends AbstractIngestor {
     }
     // --- END S3 CONFIGURATION TRANSLATION ---
 
-    // --- FIX CLASSLOADER CONTEXT FOR SERVICE DISCOVERY ---
-    // The NRTSearch PluginClassLoader isolates plugins, preventing ServiceLoader from finding
-    // Hadoop FileSystem implementations. Set the context classloader so ServiceLoader can
-    // discover S3AFileSystem in the plugin's isolated classloader.
-    ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
-    Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
-
-    try {
-      // Create catalog
-      CatalogContext catalogContext = CatalogContext.create(catalogOptions);
-      this.catalog = CatalogFactory.createCatalog(catalogContext);
-    } finally {
-      // Always restore original context classloader
-      Thread.currentThread().setContextClassLoader(originalClassLoader);
-    }
+    // Hadoop dependencies should be on the host classpath (nrtsearch/lib)
+    CatalogContext catalogContext = CatalogContext.create(catalogOptions);
+    this.catalog = CatalogFactory.createCatalog(catalogContext);
 
     // Get table
     String[] pathParts = paimonConfig.getTablePath().split("\\.");

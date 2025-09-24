@@ -1,42 +1,40 @@
 // Plugin configurations are inherited from root project
-plugins {
-    id 'com.gradleup.shadow' version '8.3.0'
-}
 
 dependencies {
     // NRTSearch server dependencies
     implementation libs.nrtsearch.server
 
-    // Apache Paimon dependencies - using latest stable 1.2.0
-    implementation 'org.apache.paimon:paimon-core:1.2.0'
-    implementation 'org.apache.paimon:paimon-common:1.2.0'
-    implementation 'org.apache.paimon:paimon-format:1.2.0'
-    implementation 'org.apache.paimon:paimon-s3:1.2.0'
+    // Use Paimon bundle for standalone JVM as recommended by official docs
+    // https://paimon.apache.org/docs/master/program-api/java-api/
+    // "Maven dependency: paimon-bundle"
+    implementation 'org.apache.paimon:paimon-bundle:1.2.0'
 
-    // CONSISTENT Hadoop dependencies for Paimon S3A support
-    // All must be the same version to avoid conflicts.
-    implementation 'org.apache.hadoop:hadoop-common:3.3.6'
-    implementation 'org.apache.hadoop:hadoop-client-api:3.3.6'
-    implementation 'org.apache.hadoop:hadoop-client-runtime:3.3.6'
-    implementation ('org.apache.hadoop:hadoop-aws:3.3.6') {
-        exclude group: 'com.amazonaws', module: 'aws-java-sdk-bundle'
-    }
+    // NOTE: Hadoop and AWS dependencies are NOT included in the plugin JAR
+    // They must be provided at runtime in the NRTSearch host classpath
+    // Following the same pattern as production Flink deployments
 
-    implementation platform('com.amazonaws:aws-java-sdk-bom:1.12.768')
-    // AWS SDK BOM manages versions
-    implementation 'com.amazonaws:aws-java-sdk-s3'
-    implementation 'com.amazonaws:aws-java-sdk-core'
-    implementation 'com.amazonaws:aws-java-sdk-sts'
-    
     // Logging
     implementation libs.slf4j.api
-    
+
     // Testing
     testImplementation("${libs.nrtsearch.server.get()}:tests")
     testImplementation libs.grpc.testing
     testImplementation libs.grpc.inprocess
     testImplementation libs.junit
     testRuntimeOnly libs.junit.vintage.engine
+
+    // Hadoop/AWS dependencies for tests only - these simulate the host classpath
+    // In production, these JARs will be in NRTSearch/lib/ directory
+    testImplementation 'org.apache.hadoop:hadoop-common:3.3.6'
+    testImplementation 'org.apache.hadoop:hadoop-client-api:3.3.6'
+    testImplementation 'org.apache.hadoop:hadoop-client-runtime:3.3.6'
+    testImplementation ('org.apache.hadoop:hadoop-aws:3.3.6') {
+        exclude group: 'com.amazonaws', module: 'aws-java-sdk-bundle'
+    }
+    testImplementation platform('com.amazonaws:aws-java-sdk-bom:1.12.768')
+    testImplementation 'com.amazonaws:aws-java-sdk-s3'
+    testImplementation 'com.amazonaws:aws-java-sdk-core'
+    testImplementation 'com.amazonaws:aws-java-sdk-sts'
     
     // --- Needed for gRPC client and full NrtSearch tests ---
     testImplementation libs.grpc.netty.shaded
@@ -66,15 +64,21 @@ test {
 distributions {
     main {
         contents {
-            // Use the single, self-contained uber JAR instead of many individual JARs
-            from(shadowJar)
+            // Use the regular JAR with paimon-bundle dependency
+            // Hadoop/AWS dependencies are provided by the host system
+            from(jar)
+            from(configurations.runtimeClasspath) {
+                // Include paimon-bundle and other runtime dependencies
+                include 'paimon-bundle-*.jar'
+                include 'slf4j-api-*.jar'
+            }
 
             from('src/main/plugin-metadata/plugin-metadata.yaml') {
                 expand(
                         classname: 'com.yelp.nrtsearch.plugins.ingestion.paimon.PaimonIngestPlugin',
                         name: "nrtsearch-paimon-ingestion",
                         version: project.version,
-                        description: 'Apache Paimon ingestion plugin for nrtsearch with Dynamic Shared Queue architecture',
+                        description: 'Apache Paimon ingestion plugin for nrtsearch',
                         server_version: "1.+"
                 )
             }
@@ -120,25 +124,5 @@ task e2eTest(type: Test) {
     }
 }
 
-shadowJar {
-    // Enable ZIP64 support for large archives with >65535 entries
-    zip64 = true
-
-    // This merges META-INF/services files, which is critical for Hadoop's FileSystem discovery
-    mergeServiceFiles()
-
-    // Exclude unshaded duplicate classes from embedded JARs that cause LinkageError
-    exclude 'paimon-plugin-s3/**'
-
-    // Transform configuration to customize how files are handled
-    transform(com.github.jengelman.gradle.plugins.shadow.transformers.ServiceFileTransformer)
-
-    // Relocate packages to prevent classpath conflicts with the main Nrtsearch application.
-    // This creates a private copy of these libraries for the plugin's use only.
-    relocate 'org.apache.paimon', 'com.yelp.nrtsearch.plugins.paimon.shaded.paimon'
-    relocate 'org.apache.hadoop', 'com.yelp.nrtsearch.plugins.paimon.shaded.hadoop'
-    relocate 'com.amazonaws', 'com.yelp.nrtsearch.plugins.paimon.shaded.amazonaws'
-    relocate 'com.fasterxml.jackson', 'com.yelp.nrtsearch.plugins.paimon.shaded.jackson'
-    relocate 'org.apache.http', 'com.yelp.nrtsearch.plugins.paimon.shaded.http'
-    relocate 'joda-time', 'com.yelp.nrtsearch.plugins.paimon.shaded.joda'
-}
+// No shadowJar configuration needed with paimon-bundle approach
+// Hadoop/AWS dependencies are provided by the host system classpath

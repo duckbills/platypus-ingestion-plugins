@@ -1,4 +1,0 @@
-# S3A FileSystem service registration for Paimon plugin
-# This fixes the missing S3AFileSystem registration in paimon-s3:1.2.0 and hadoop-aws:3.3.6
-# The Shadow plugin mergeServiceFiles() will combine this with other Hadoop FileSystem services
-org.apache.hadoop.fs.s3a.S3AFileSystem
