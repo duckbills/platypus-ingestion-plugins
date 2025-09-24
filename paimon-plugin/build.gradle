@@ -127,6 +127,12 @@ shadowJar {
     // This merges META-INF/services files, which is critical for Hadoop's FileSystem discovery
     mergeServiceFiles()
 
+    // Exclude unshaded duplicate classes from embedded JARs that cause LinkageError
+    exclude 'paimon-plugin-s3/**'
+
+    // Transform configuration to customize how files are handled
+    transform(com.github.jengelman.gradle.plugins.shadow.transformers.ServiceFileTransformer)
+
     // Relocate packages to prevent classpath conflicts with the main Nrtsearch application.
     // This creates a private copy of these libraries for the plugin's use only.
     relocate 'org.apache.paimon', 'com.yelp.nrtsearch.plugins.paimon.shaded.paimon'
