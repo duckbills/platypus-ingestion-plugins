@@ -71,68 +71,10 @@ The E2E tests automatically:
 
 ## Plugin Configuration
 
-### Kafka Plugin Configuration
+Each plugin has its own configuration format and requirements. See the individual plugin READMEs for detailed configuration instructions:
 
-Configure the Kafka plugin in your NRTSearch server configuration:
-
-```yaml
-plugins:
-  - "s3://your-bucket/nrtsearch/plugins/kafka-plugin-0.1.0-SNAPSHOT.zip"
-
-pluginConfigs:
-  ingestion:
-    kafka:
-      bootstrapServers: "localhost:9092"
-      schemaRegistryUrl: "http://localhost:8081"
-      groupId: "nrtsearch-consumer"
-      topic: "your-topic-name"
-      indexName: "your-index-name"
-      autoOffsetReset: "earliest"  # or "latest"
-      batchSize: 1000
-      maxPollRecords: 1000
-      pollTimeoutMs: 1000
-```
-
-#### Configuration Parameters
-- **bootstrapServers**: Kafka broker addresses
-- **schemaRegistryUrl**: Confluent Schema Registry URL for Avro schema management
-- **groupId**: Kafka consumer group ID (use unique names for different deployments)
-- **topic**: Kafka topic to consume from
-- **indexName**: NRTSearch index to write documents to
-- **autoOffsetReset**: What to do when there's no initial offset (`earliest` or `latest`)
-- **batchSize**: Number of documents to batch before committing to NRTSearch
-- **maxPollRecords**: Maximum records returned in a single poll()
-- **pollTimeoutMs**: Timeout for Kafka consumer poll operations
-
-### Schema Requirements
-
-The plugin expects Avro schemas with the following conventions:
-- **Nested objects**: Flattened with underscore separation (e.g., `metadata.author` → `metadata_author`)
-- **Array fields**: Automatically detected and configured as multi-valued in NRTSearch
-- **Primitive types**: Direct mapping to NRTSearch field types (STRING→ATOM, DOUBLE→DOUBLE, etc.)
-
-Example compatible Avro schema:
-```json
-{
-  "type": "record",
-  "name": "Document",
-  "fields": [
-    {"name": "id", "type": "string"},
-    {"name": "title", "type": "string"},
-    {"name": "content", "type": "string"},
-    {"name": "rating", "type": "double"},
-    {"name": "tags", "type": {"type": "array", "items": "string"}},
-    {"name": "metadata", "type": {
-      "type": "record", 
-      "name": "Metadata",
-      "fields": [
-        {"name": "author", "type": "string"},
-        {"name": "publishDate", "type": "string"}
-      ]
-    }}
-  ]
-}
-```
+- **Kafka Plugin**: [kafka-plugin/README.md](kafka-plugin/README.md#configuration)
+- **Paimon Plugin**: [paimon-plugin/README.md](paimon-plugin/README.md#configuration)
 
 ## Development Guide
 
@@ -295,19 +237,12 @@ NRTSearch plugins are loaded dynamically at server startup:
 3. **Loading**: NRTSearch downloads and extracts plugins to a local cache directory
 4. **Initialization**: Plugin classes are loaded via custom ClassLoader and instantiated
 
-### Data Flow (Kafka Plugin Example)
-```
-Kafka Topic → Avro Consumer → Schema Registry → Field Mapping → NRTSearch Index → Search API
-     ↓              ↓              ↓              ↓              ↓
-   Offset      Deserialization   Type         Document      Commit &
-  Management      & Batching    Conversion    Indexing      Refresh
-```
+### Data Flow
+Each plugin implements a different data flow pattern optimized for its source system:
+- **Kafka Plugin**: Event-driven consumption with offset management
+- **Paimon Plugin**: Batch processing with dynamic work distribution
 
-### Error Handling & Recovery
-- **Offset Management**: Consumer offsets only committed after successful NRTSearch indexing
-- **Retry Logic**: Configurable retry with exponential backoff for transient failures  
-- **Dead Letter Queues**: Failed messages can be redirected to error topics
-- **Graceful Shutdown**: Plugins complete in-flight operations before stopping
+See individual plugin READMEs for detailed architecture diagrams.
 
 ## Troubleshooting
 
@@ -334,19 +269,11 @@ unzip -l build/distributions/kafka-plugin-0.1.0-SNAPSHOT.zip
 tail -f nrtsearch-server.log | grep -i plugin
 ```
 
-#### Schema Registry Connectivity
-```bash
-# Test Schema Registry connectivity
-curl http://localhost:8081/subjects
+#### Plugin-Specific Issues
 
-# Check Avro schema registration
-curl http://localhost:8081/subjects/your-topic-value/versions/latest
-```
-
-#### Performance Tuning
-- **Batch Size**: Increase `batchSize` for higher throughput (default: 1000)
-- **Consumer Threads**: Plugin supports multiple consumer threads per partition
-- **JVM Settings**: Ensure adequate heap for large Avro schemas and batching
+For plugin-specific troubleshooting:
+- **Kafka Plugin**: [kafka-plugin/README.md](kafka-plugin/README.md#troubleshooting)
+- **Paimon Plugin**: [paimon-plugin/README.md](paimon-plugin/README.md#s3a-filesystem-troubleshooting)
 
 ### Getting Help
 

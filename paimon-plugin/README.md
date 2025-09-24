@@ -111,6 +111,105 @@ The plugin automatically configures S3A filesystem when `warehouse.path` starts 
 - **Sequence Number Sorting**: Splits within each bucket are sorted by minimum sequence number
 - **Sequential Processing**: Each bucket is processed by a single worker thread sequentially
 
+## S3A FileSystem Troubleshooting
+
+The most common issue with Paimon S3A integration is the "No FileSystem for scheme: s3a" error. This section explains the root causes and solutions.
+
+### Root Cause Analysis
+
+**The Problem**: Apache Paimon and Hadoop have a service discovery bug where `S3AFileSystem` is not properly registered in `META-INF/services/org.apache.hadoop.fs.FileSystem` files.
+
+**Affected Versions**:
+- ❌ `paimon-s3:1.2.0` - Missing S3AFileSystem service registration
+- ❌ `hadoop-aws:3.3.6` - Missing S3AFileSystem service registration
+- ✅ `hadoop-aws:2.7.3, 2.8.3` - Have proper S3AFileSystem service registration
+
+**Why It Works in Flink**: Flink deployments work because they use separate `hadoop-aws` JARs in the shared classloader, not shaded within individual applications.
+
+### Architecture Comparison
+
+| **Flink Environment (Standard Approach)**    | **NRTSearch Plugin (Our Approach)** |
+|----------------------------------------------|--------------------------------------|
+| Shared parent classloader                    | Isolated plugin classloader |
+| `hadoop-aws-2.8.3` in `$FLINK_HOME/lib/`     | Everything shaded in plugin JAR |
+| ServiceLoader works across classpath         | ServiceLoader isolated to plugin |
+| External dependency management               | Self-contained plugin |
+| **Pros**: Works with standard Hadoop JARs    | **Pros**: No external dependencies |
+| **Cons**: Requires runtime environment setup | **Cons**: Must handle service registration manually |
+
+### Our Solution
+
+We implement a **dual-fix approach** that addresses both the service registration and classloader isolation issues:
+
+1. **Service File Fix**: Manual registration of `S3AFileSystem` in plugin resources
+2. **ClassLoader Context Fix**: Set thread context classloader before Paimon initialization
+
+```java
+// ClassLoader Context Fix in PaimonIngestor.java
+ClassLoader originalClassLoader = Thread.currentThread().getContextClassLoader();
+Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
+
+try {
+    // Create catalog - now ServiceLoader can find S3AFileSystem
+    CatalogContext catalogContext = CatalogContext.create(catalogOptions);
+    this.catalog = CatalogFactory.createCatalog(catalogContext);
+} finally {
+    Thread.currentThread().setContextClassLoader(originalClassLoader);
+}
+```
+
+### Debugging S3A Issues
+
+**1. Verify Service Registration**:
+```bash
+# Extract your plugin JAR and check service file
+jar tf your-plugin.jar | grep -E "META-INF/services.*FileSystem"
+jar -xf your-plugin.jar META-INF/services/com.yelp.nrtsearch.plugins.paimon.shaded.hadoop.fs.FileSystem
+cat META-INF/services/com.yelp.nrtsearch.plugins.paimon.shaded.hadoop.fs.FileSystem
+
+# Should contain:
+# com.yelp.nrtsearch.plugins.paimon.shaded.hadoop.fs.s3a.S3AFileSystem
+```
+
+**2. Verify S3AFileSystem Class Exists**:
+```bash
+jar tf your-plugin.jar | grep S3AFileSystem.class
+# Should show: com/yelp/nrtsearch/plugins/paimon/shaded/hadoop/fs/s3a/S3AFileSystem.class
+```
+
+**3. Test S3A Configuration**:
+```bash
+# Verify S3A credentials and bucket access
+aws s3 ls s3a://your-bucket-name/
+
+# Check IAM permissions for your service role
+aws sts get-caller-identity
+```
+
+### Alternative Solutions
+
+**Option 1: Use s3:// instead of s3a://**:
+```yaml
+# Change warehouse path from s3a:// to s3://
+paimonConfig:
+  warehouse.path: "s3://your-bucket/warehouse"  # Instead of s3a://
+```
+
+**Option 2: Downgrade to Working Hadoop Version**:
+```groovy
+// Replace hadoop-aws:3.3.6 with version that has service registration
+implementation 'org.apache.hadoop:hadoop-common:2.8.3'
+implementation 'org.apache.hadoop:hadoop-client:2.8.3'
+implementation 'org.apache.hadoop:hadoop-aws:2.8.3'
+```
+
+### Why Our Approach is Better
+
+1. **Self-Contained**: No dependency on runtime environment Hadoop JARs
+2. **Version Independent**: Works regardless of hadoop-aws version bugs
+3. **Plugin Architecture**: Designed for isolated execution environments
+4. **More Robust**: Explicit control over service registration
+
 ## TODO
 
 See [TODO.md](TODO.md) for current development items and planned improvements.
