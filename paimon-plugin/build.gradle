@@ -4,14 +4,11 @@ dependencies {
     // NRTSearch server dependencies
     implementation libs.nrtsearch.server
 
-    // Use Paimon bundle for standalone JVM as recommended by official docs
-    // https://paimon.apache.org/docs/master/program-api/java-api/
-    // "Maven dependency: paimon-bundle"
-    implementation 'org.apache.paimon:paimon-bundle:1.2.0'
+    // Paimon core for standalone JVM
+    implementation 'org.apache.paimon:paimon-bundle:1.4-SNAPSHOT'
 
-    // NOTE: Hadoop and AWS dependencies are NOT included in the plugin JAR
-    // They must be provided at runtime in the NRTSearch host classpath
-    // Following the same pattern as production Flink deployments
+    // Hadoop client for S3A filesystem access
+    implementation 'org.apache.hadoop:hadoop-client:3.3.4'
 
     // Logging
     implementation libs.slf4j.api
@@ -23,19 +20,6 @@ dependencies {
     testImplementation libs.junit
     testRuntimeOnly libs.junit.vintage.engine
 
-    // Hadoop/AWS dependencies for tests only - these simulate the host classpath
-    // In production, these JARs will be in NRTSearch/lib/ directory
-    testImplementation 'org.apache.hadoop:hadoop-common:3.3.6'
-    testImplementation 'org.apache.hadoop:hadoop-client-api:3.3.6'
-    testImplementation 'org.apache.hadoop:hadoop-client-runtime:3.3.6'
-    testImplementation ('org.apache.hadoop:hadoop-aws:3.3.6') {
-        exclude group: 'com.amazonaws', module: 'aws-java-sdk-bundle'
-    }
-    testImplementation platform('com.amazonaws:aws-java-sdk-bom:1.12.768')
-    testImplementation 'com.amazonaws:aws-java-sdk-s3'
-    testImplementation 'com.amazonaws:aws-java-sdk-core'
-    testImplementation 'com.amazonaws:aws-java-sdk-sts'
-    
     // --- Needed for gRPC client and full NrtSearch tests ---
     testImplementation libs.grpc.netty.shaded
     testImplementation libs.protobuf.java
@@ -64,12 +48,12 @@ test {
 distributions {
     main {
         contents {
-            // Use the regular JAR with paimon-bundle dependency
-            // Hadoop/AWS dependencies are provided by the host system
+            // Simple approach: plugin JAR + essential Paimon dependencies
             from(jar)
             from(configurations.runtimeClasspath) {
-                // Include paimon-bundle and other runtime dependencies
-                include 'paimon-bundle-*.jar'
+                // Include paimon-bundle and hadoop-client
+                include 'paimon-bundle-1.4-SNAPSHOT.jar'
+                include 'hadoop-client-*.jar'
                 include 'slf4j-api-*.jar'
             }
 
@@ -124,5 +108,6 @@ task e2eTest(type: Test) {
     }
 }
 
-// No shadowJar configuration needed with paimon-bundle approach
-// Hadoop/AWS dependencies are provided by the host system classpath
+// Clean approach following Paimon 1.4 documentation:
+// - paimon-bundle: Core Paimon logic with filesystem implementations
+// - hadoop-client: Standard Hadoop client for S3A filesystem access
