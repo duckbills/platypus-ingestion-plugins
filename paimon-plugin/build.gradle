@@ -23,6 +23,7 @@ dependencies {
 
     // Hadoop client for core classes (Configuration, etc.) needed by Paimon internals
     implementation 'org.apache.hadoop:hadoop-client:3.3.4'
+    implementation 'org.apache.hadoop:hadoop-aws:3.3.4'
 
     // Logging
     implementation libs.slf4j.api
