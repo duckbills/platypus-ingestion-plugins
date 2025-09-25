@@ -183,8 +183,7 @@ public class PaimonIngestor extends AbstractIngestor {
         LOGGER.info("No S3 endpoint configured. Using production IAM roles.");
         catalogOptions.set(
             "fs.s3a.aws.credentials.provider",
-            "com.amazonaws.auth.WebIdentityTokenCredentialsProvider,"
-                + "com.amazonaws.auth.DefaultAWSCredentialsProviderChain");
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain");
       }
 
       LOGGER.info("Applied S3A configuration for warehouse: {}", paimonConfig.getWarehousePath());
