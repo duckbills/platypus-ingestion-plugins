@@ -209,18 +209,65 @@ public class PaimonToAddDocumentConverter {
     return fieldBuilder.build();
   }
 
-  /** Convert Paimon array to JSON string representation. */
+  /** Convert Paimon array to JSON string representation using Paimon's InternalRowUtils. */
   private String convertArrayToJson(
       org.apache.paimon.data.InternalArray array, org.apache.paimon.types.DataType dataType) {
-    // Simplified JSON conversion - in production, use proper JSON library
+    org.apache.paimon.types.ArrayType arrayType = (org.apache.paimon.types.ArrayType) dataType;
+    org.apache.paimon.types.DataType elementType = arrayType.getElementType();
+
     StringBuilder json = new StringBuilder("[");
     for (int i = 0; i < array.size(); i++) {
       if (i > 0) json.append(",");
-      // Add array element conversion based on element type
-      json.append("\"").append(array.getString(i)).append("\"");
+
+      // Use Paimon's InternalRowUtils.get() for safe type-aware element extraction
+      Object elementValue = org.apache.paimon.utils.InternalRowUtils.get(array, i, elementType);
+
+      if (elementValue == null) {
+        json.append("null");
+      } else {
+        // Handle different element types properly for JSON representation
+        switch (elementType.getTypeRoot()) {
+          case DOUBLE:
+          case FLOAT:
+          case INTEGER:
+          case BIGINT:
+          case BOOLEAN:
+          case TINYINT:
+          case SMALLINT:
+            // Numeric and boolean values don't need quotes in JSON
+            json.append(elementValue.toString());
+            break;
+          case CHAR:
+          case VARCHAR:
+            // String values need quotes and escaping in JSON
+            json.append("\"").append(escapeJsonString(elementValue.toString())).append("\"");
+            break;
+          case BINARY:
+          case VARBINARY:
+            // Binary data as base64 string
+            byte[] binaryData = (byte[]) elementValue;
+            String base64Value = java.util.Base64.getEncoder().encodeToString(binaryData);
+            json.append("\"").append(base64Value).append("\"");
+            break;
+          default:
+            // For other types, convert to string and quote
+            json.append("\"").append(escapeJsonString(elementValue.toString())).append("\"");
+            break;
+        }
+      }
     }
     json.append("]");
     return json.toString();
+  }
+
+  /** Escape special characters in JSON strings. */
+  private String escapeJsonString(String input) {
+    if (input == null) return "";
+    return input.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
   }
 
   /** Convert Paimon map to JSON string representation. */

@@ -31,7 +31,8 @@ The plugin supports both filesystem and S3-based Paimon warehouses with automati
 ingestionPluginConfigs:
   paimon:
     warehouse.path: "s3a://prod-bucket/warehouse/"  # S3A warehouse path
-    table.path: "production.events"
+    database.name: "production"                     # Database name (can contain dots)
+    table.name: "events"                           # Table name (can contain dots)
     target.index.name: "events-index"
     # No explicit S3 config - uses IAM roles automatically
 ```
@@ -41,7 +42,8 @@ ingestionPluginConfigs:
 ingestionPluginConfigs:
   paimon:
     warehouse.path: "s3a://test-bucket/warehouse/"  # S3A warehouse path
-    table.path: "test.events"
+    database.name: "test"                          # Database name
+    table.name: "events"                           # Table name
     target.index.name: "test-events-index"
     s3:
       endpoint: "http://127.0.0.1:8011"             # S3Mock endpoint for testing
@@ -55,7 +57,8 @@ ingestionPluginConfigs:
 ingestionPluginConfigs:
   paimon:
     warehouse.path: "file:///tmp/paimon-warehouse/" # Local filesystem
-    table.path: "test_db.documents"
+    database.name: "test_db"                       # Database name
+    table.name: "documents"                        # Table name
     target.index.name: "local-index"
 ```
 
@@ -84,10 +87,75 @@ ingestionPluginConfigs:
 The plugin automatically configures S3A filesystem when `warehouse.path` starts with `s3a://`:
 
 - **Universal Settings**: S3A implementation, connection pooling, performance optimizations
-- **Credential Selection**:
+- **Credential Provider Chain**:
   - **With endpoint**: Uses SimpleAWSCredentialsProvider (test/local environments)
-  - **Without endpoint**: Uses WebIdentityTokenCredentialsProvider + DefaultAWSCredentialsProviderChain (production IAM roles)
+  - **Without endpoint**: Uses DefaultAWSCredentialsProviderChain (production - supports IAM roles, aws-okta, profiles)
 - **Performance Tuning**: 256 max connections, 128 threads, 64MB block size
+
+#### S3A Scheme Support
+
+The plugin includes a **custom S3ALoader** that extends Paimon's S3 support to handle `s3a://` scheme URLs:
+
+- **Background**: Paimon's built-in S3Loader only supports `s3://` scheme
+- **Solution**: Custom `S3ALoader` registers for `s3a://` scheme but uses the same underlying S3FileIO
+- **Service Discovery**: Registered via `META-INF/services/org.apache.paimon.fs.FileIOLoader`
+- **Credential Chain**: Uses DefaultAWSCredentialsProviderChain for maximum compatibility
+
+## Dependency Packaging
+
+### Critical Dependencies
+
+The plugin requires careful dependency management to work in NRTSearch's plugin classloader environment:
+
+#### Core Paimon Dependencies
+```gradle
+// Paimon core for standalone JVM (includes most FileIO implementations)
+implementation 'org.apache.paimon:paimon-bundle:1.4-SNAPSHOT'
+
+// Paimon's S3 implementation (contains S3FileIO and S3Loader)
+implementation 'org.apache.paimon:paimon-s3:1.4-SNAPSHOT'
+
+// Hadoop client for S3A filesystem and AWS credential providers
+implementation 'org.apache.hadoop:hadoop-client:3.3.4'
+implementation 'org.apache.hadoop:hadoop-aws:3.3.4'
+```
+
+#### Shadow JAR Configuration
+```gradle
+shadowJar {
+    // Enable ZIP64 for large JARs (required for all dependencies)
+    zip64 true
+    archiveClassifier = 'all'
+
+    // CRITICAL: Merge service files instead of overwriting
+    mergeServiceFiles()
+}
+```
+
+### Service File Merging
+
+**Problem**: Multiple JARs contain `META-INF/services/org.apache.paimon.fs.FileIOLoader` files:
+- `paimon-s3.jar`: Contains S3Loader registration
+- Our plugin: Contains S3ALoader registration
+
+**Solution**: `mergeServiceFiles()` combines all service registrations, enabling both loaders:
+```
+# Final merged service file
+org.apache.paimon.s3.S3Loader
+com.yelp.nrtsearch.plugins.ingestion.paimon.S3ALoader
+```
+
+### Classloader Considerations
+
+#### Plugin Isolation
+- NRTSearch loads plugins in isolated classloaders
+- Each plugin's dependencies are self-contained via Shadow JAR
+- Thread context classloader must be set for worker threads
+
+#### Hadoop Configuration
+- Hadoop `Configuration` objects must be created within plugin context
+- S3A filesystem implementation is loaded dynamically
+- Credential providers are resolved via classloader
 
 ## Architecture
 

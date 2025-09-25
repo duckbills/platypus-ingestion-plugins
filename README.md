@@ -12,6 +12,15 @@ A production-ready plugin that consumes data from Apache Kafka topics and indexe
 - **Production Ready**: Comprehensive error handling and monitoring support
 - **Flexible Configuration**: Support for complex nested Avro schemas
 
+### Paimon Ingestion Plugin
+A production-ready plugin for ingesting data from Apache Paimon data lake tables with advanced S3A support. Features include:
+- **S3A Filesystem Support**: Custom S3ALoader extends Paimon's S3 support to `s3a://` schemes
+- **Dynamic Shared Queue**: Coordinator-worker pattern handles workload skew in dynamic bucket tables
+- **Incremental Processing**: Efficient checkpoint/restore mechanism for real-time data processing
+- **Complex Type Conversion**: Robust handling of arrays, embeddings, and nested data structures
+- **Production S3 Integration**: IAM roles, credential providers, and performance optimization
+- **Self-Contained Dependencies**: Shadow JAR with merged service files for plugin isolation
+
 ## Quick Start
 
 ### Prerequisites
