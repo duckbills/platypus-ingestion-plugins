@@ -194,14 +194,8 @@ public class PaimonIngestor extends AbstractIngestor {
     CatalogContext catalogContext = CatalogContext.create(catalogOptions);
     this.catalog = CatalogFactory.createCatalog(catalogContext);
 
-    // Get table
-    String[] pathParts = paimonConfig.getTablePath().split("\\.");
-    if (pathParts.length != 2) {
-      throw new IllegalArgumentException(
-          "Table path must be in format 'database.table', got: " + paimonConfig.getTablePath());
-    }
-    String database = pathParts[0];
-    String tableName = pathParts[1];
+    String database = paimonConfig.getDatabaseName();
+    String tableName = paimonConfig.getTableName();
 
     Table baseTable = catalog.getTable(Identifier.create(database, tableName));
     Map<String, String> consumerOptions = new HashMap<>();

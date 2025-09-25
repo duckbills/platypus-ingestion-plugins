@@ -370,13 +370,13 @@ public class PaimonIngestorTest {
   // LIFECYCLE AND INITIALIZATION TESTS
   // ============================================================================
 
-  @Test(expected = IllegalArgumentException.class)
-  public void testInitialize_FailsOnInvalidTablePath() throws Exception {
+  @Test(expected = org.apache.paimon.catalog.Catalog.TableNotExistException.class)
+  public void testInitialize_FailsOnMissingDatabaseOrTableName() throws Exception {
     // Arrange
     when(mockPaimonConfig.getWarehousePath()).thenReturn("/tmp/test_warehouse");
-    when(mockPaimonConfig.getTablePath()).thenReturn("invalid_path_no_dot");
+    when(mockPaimonConfig.getDatabaseName()).thenReturn("test_db");
+    when(mockPaimonConfig.getTableName()).thenReturn("test_table");
 
-    // Act - This should throw IllegalArgumentException
     ingestor.initializePaimonComponents();
   }
 }
