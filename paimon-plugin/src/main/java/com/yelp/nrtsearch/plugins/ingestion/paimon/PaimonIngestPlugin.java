@@ -84,9 +84,9 @@ public class PaimonIngestPlugin extends Plugin implements IngestionPlugin {
       int workerThreads = paimonConfig.getWorkerThreads();
       this.executorService =
           Executors.newFixedThreadPool(
-              workerThreads + 1, // +1 for coordinator thread
+              workerThreads + 1, // +1 for start() thread which becomes coordinator
               r -> {
-                Thread t = new Thread(r, "paimon-ingest-worker-" + THREAD_ID.getAndIncrement());
+                Thread t = new Thread(r, "paimon-thread-" + THREAD_ID.getAndIncrement());
                 t.setDaemon(true);
                 // Set thread context classloader to plugin's classloader for service discovery
                 t.setContextClassLoader(this.getClass().getClassLoader());

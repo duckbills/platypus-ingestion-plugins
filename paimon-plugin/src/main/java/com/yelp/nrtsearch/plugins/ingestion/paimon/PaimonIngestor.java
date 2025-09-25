@@ -86,21 +86,29 @@ public class PaimonIngestor extends AbstractIngestor {
   @Override
   public void start() throws IOException {
     if (running.compareAndSet(false, true)) {
+      // Set this thread's name to coordinator for clear logging
+      Thread.currentThread().setName("paimon-coordinator-" + nrtSearchConfig.getServiceName());
+
       LOGGER.info("Starting Paimon ingestion");
 
       try {
         initializePaimonComponents();
 
-        // Start coordinator thread
-        executorService.submit(this::coordinatorLoop);
-
-        // Start worker threads
+        // Start worker threads with explicit names
         for (int i = 0; i < paimonConfig.getWorkerThreads(); i++) {
           final int workerId = i;
-          executorService.submit(() -> workerLoop(workerId));
+          executorService.submit(() -> {
+            Thread.currentThread().setName("paimon-worker-" + workerId);
+            workerLoop(workerId);
+          });
         }
 
-        LOGGER.info("Paimon ingestion started with {} workers", paimonConfig.getWorkerThreads());
+        LOGGER.info("Paimon ingestion started with {} workers, coordinator thread starting",
+                   paimonConfig.getWorkerThreads());
+
+        // This thread now runs the coordinator loop directly (blocking until shutdown)
+        coordinatorLoop();
+
       } catch (Exception e) {
         running.set(false);
         throw new IOException("Failed to start Paimon ingestion", e);
