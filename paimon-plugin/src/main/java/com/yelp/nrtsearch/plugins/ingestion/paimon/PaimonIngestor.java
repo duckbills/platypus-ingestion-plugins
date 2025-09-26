@@ -63,6 +63,12 @@ public class PaimonIngestor extends AbstractIngestor {
   private final PaimonConfig paimonConfig;
   private PaimonToAddDocumentConverter converter;
 
+  // Statistics tracking
+  private final AtomicLong totalDocumentsProcessed = new AtomicLong(0);
+  private final AtomicLong totalBatchesProcessed = new AtomicLong(0);
+  private final AtomicLong totalProcessingTimeMs = new AtomicLong(0);
+  private volatile long lastStatsLogTime = System.currentTimeMillis();
+
   // Paimon components
   private Catalog catalog;
   private Table table;
@@ -245,9 +251,27 @@ public class PaimonIngestor extends AbstractIngestor {
           InFlightBatch batch = new InFlightBatch(nextSnapshot, splitsByBucket.size());
 
           // PHASE 2: DISPATCH WORK - Add all work to queue with batch reference
+          long totalSplitSize = 0;
           for (Map.Entry<Integer, List<Split>> entry : splitsByBucket.entrySet()) {
             List<Split> sortedSplits = sortSplitsBySequence(entry.getValue());
             BucketWork bucketWork = new BucketWork(entry.getKey(), sortedSplits, batch);
+
+            // Calculate split sizes for logging
+            long bucketSplitSize = 0;
+            for (Split split : sortedSplits) {
+              if (split instanceof DataSplit) {
+                DataSplit dataSplit = (DataSplit) split;
+                bucketSplitSize +=
+                    dataSplit.dataFiles().stream().mapToLong(file -> file.fileSize()).sum();
+              }
+            }
+            totalSplitSize += bucketSplitSize;
+
+            LOGGER.debug(
+                "Bucket {} has {} splits, total size: {:.2f} MB",
+                entry.getKey(),
+                sortedSplits.size(),
+                bucketSplitSize / (1024.0 * 1024.0));
 
             // Block with timeout and continuous logging (prevents data loss)
             boolean queued = false;
@@ -268,20 +292,32 @@ public class PaimonIngestor extends AbstractIngestor {
             }
           }
 
-          // PHASE 3: AWAIT COMPLETION - Critical synchronization point
           LOGGER.info(
-              "Coordinator dispatched {} buckets for checkpoint {}. Awaiting completion...",
+              "Coordinator dispatched {} buckets ({} total splits, {:.2f} MB data) for checkpoint {}. Awaiting completion...",
               splitsByBucket.size(),
+              incrementalSplits.size(),
+              totalSplitSize / (1024.0 * 1024.0),
               nextSnapshot);
 
-          batch.awaitCompletion();
+          // PHASE 3: AWAIT COMPLETION - Critical synchronization point
 
-          LOGGER.info("All workers completed work for checkpoint {}", nextSnapshot);
+          long batchStartTime = System.currentTimeMillis();
+          batch.awaitCompletion();
+          long batchDuration = System.currentTimeMillis() - batchStartTime;
+
+          LOGGER.info(
+              "All workers completed checkpoint {} in {:.1f}s - {} buckets processed",
+              nextSnapshot,
+              batchDuration / 1000.0,
+              splitsByBucket.size());
 
           // PHASE 4: COMMIT CHECKPOINT - Only happens after all work is done
           streamTableScan.notifyCheckpointComplete(nextSnapshot);
 
-          LOGGER.info("Successfully committed Paimon checkpoint {}", nextSnapshot);
+          LOGGER.info(
+              "Committed Paimon checkpoint {} - total processing time: {:.1f}s",
+              nextSnapshot,
+              (System.currentTimeMillis() - batchStartTime) / 1000.0);
         }
 
         // Sleep before next scan
@@ -342,11 +378,37 @@ public class PaimonIngestor extends AbstractIngestor {
 
         // SUCCESS: Signal completion and exit
         bucketWork.getBatch().markBucketComplete();
-        LOGGER.info(
-            "Worker {} completed bucket {} after {} attempts",
-            workerId,
-            bucketWork.getBucketId(),
-            attempt);
+
+        // Calculate bucket processing stats
+        long bucketDataSize = 0;
+        int totalDocuments = 0;
+        for (Split split : bucketWork.getSplits()) {
+          if (split instanceof DataSplit) {
+            DataSplit dataSplit = (DataSplit) split;
+            bucketDataSize +=
+                dataSplit.dataFiles().stream().mapToLong(file -> file.fileSize()).sum();
+            totalDocuments += dataSplit.rowCount();
+          }
+        }
+
+        if (attempt == 1) {
+          LOGGER.info(
+              "Worker {} completed bucket {} - {} splits, {:.2f} MB, ~{} docs",
+              workerId,
+              bucketWork.getBucketId(),
+              bucketWork.getSplits().size(),
+              bucketDataSize / (1024.0 * 1024.0),
+              totalDocuments);
+        } else {
+          LOGGER.info(
+              "Worker {} completed bucket {} after {} attempts - {} splits, {:.2f} MB, ~{} docs",
+              workerId,
+              bucketWork.getBucketId(),
+              attempt,
+              bucketWork.getSplits().size(),
+              bucketDataSize / (1024.0 * 1024.0),
+              totalDocuments);
+        }
         return;
 
       } catch (Exception e) {
@@ -482,14 +544,32 @@ public class PaimonIngestor extends AbstractIngestor {
       throws Exception {
     String indexName = paimonConfig.getTargetIndexName();
 
+    long startTime = System.currentTimeMillis();
     long seqNum = addDocuments(batch, indexName);
     commit(indexName); // Commit after adding documents
-    LOGGER.debug(
-        "Worker {} indexed and committed {} documents from bucket {}, seqNum: {}",
+    long duration = System.currentTimeMillis() - startTime;
+
+    // Update statistics
+    totalDocumentsProcessed.addAndGet(batch.size());
+    totalBatchesProcessed.incrementAndGet();
+    totalProcessingTimeMs.addAndGet(duration);
+
+    // Promote to INFO for visibility - this is key progress information
+    LOGGER.info(
+        "Worker {} indexed {} docs from bucket {} in {}ms, seqNum: {}, throughput: {:.1f} docs/sec",
         workerId,
         batch.size(),
         bucketId,
-        seqNum);
+        duration,
+        seqNum,
+        duration > 0 ? (batch.size() * 1000.0 / duration) : 0.0);
+
+    // Log periodic summary statistics (every 5 minutes)
+    long currentTime = System.currentTimeMillis();
+    if (currentTime - lastStatsLogTime > 300000) { // 5 minutes
+      logSummaryStatistics();
+      lastStatsLogTime = currentTime;
+    }
   }
 
   /**
@@ -611,5 +691,27 @@ public class PaimonIngestor extends AbstractIngestor {
 
   protected void setWorkQueue(BlockingQueue<BucketWork> workQueue) {
     this.workQueue = workQueue;
+  }
+
+  /** Log summary statistics for monitoring overall throughput and performance. */
+  private void logSummaryStatistics() {
+    long totalDocs = totalDocumentsProcessed.get();
+    long totalBatches = totalBatchesProcessed.get();
+    long totalTimeMs = totalProcessingTimeMs.get();
+
+    if (totalDocs > 0 && totalTimeMs > 0) {
+      double overallThroughput = (totalDocs * 1000.0) / totalTimeMs;
+      double avgBatchSize = totalBatches > 0 ? (double) totalDocs / totalBatches : 0;
+      double avgBatchTime = totalBatches > 0 ? (double) totalTimeMs / totalBatches : 0;
+
+      LOGGER.info(
+          "=== PIPELINE SUMMARY === Total: {} docs in {} batches, "
+              + "Overall throughput: {:.1f} docs/sec, Avg batch: {:.0f} docs in {:.1f}ms",
+          totalDocs,
+          totalBatches,
+          overallThroughput,
+          avgBatchSize,
+          avgBatchTime);
+    }
   }
 }
