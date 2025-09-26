@@ -208,17 +208,16 @@ public class PaimonToAddDocumentConverterTest {
     converter.setRowType(rowType);
 
     // Create embedding_vector: array of doubles (typical ML embedding)
-    Object[] embeddingData = new Object[] {
-        -0.12345, 0.67890, 1.23456, -2.34567, 0.0, 3.14159
-    };
+    Object[] embeddingData = new Object[] {-0.12345, 0.67890, 1.23456, -2.34567, 0.0, 3.14159};
     GenericArray embeddingArray = new GenericArray(embeddingData);
 
     // Create tag_list: array of strings with international characters
-    Object[] tagsData = new Object[] {
-        BinaryString.fromString("machine_learning"),
-        BinaryString.fromString("データ"),
-        BinaryString.fromString("测试")
-    };
+    Object[] tagsData =
+        new Object[] {
+          BinaryString.fromString("machine_learning"),
+          BinaryString.fromString("データ"),
+          BinaryString.fromString("测试")
+        };
     GenericArray tagsArray = new GenericArray(tagsData);
 
     GenericRow row = new GenericRow(2);
@@ -241,16 +240,14 @@ public class PaimonToAddDocumentConverterTest {
     RowType rowType =
         RowType.of(
             new DataField(0, "doubleArrayWithNulls", new ArrayType(new DoubleType().nullable())),
-            new DataField(1, "stringArrayWithNulls", new ArrayType(new VarCharType(50).nullable())));
+            new DataField(
+                1, "stringArrayWithNulls", new ArrayType(new VarCharType(50).nullable())));
     converter.setRowType(rowType);
 
     // Create arrays with null elements
-    Object[] doubleArrayData = new Object[] { 1.5, null, 2.5 };
-    Object[] stringArrayData = new Object[] {
-        BinaryString.fromString("first"),
-        null,
-        BinaryString.fromString("third")
-    };
+    Object[] doubleArrayData = new Object[] {1.5, null, 2.5};
+    Object[] stringArrayData =
+        new Object[] {BinaryString.fromString("first"), null, BinaryString.fromString("third")};
 
     GenericArray doubleArray = new GenericArray(doubleArrayData);
     GenericArray stringArray = new GenericArray(stringArrayData);
@@ -272,16 +269,18 @@ public class PaimonToAddDocumentConverterTest {
   @Test
   public void testArrayWithSpecialCharacters() throws UnrecoverableConversionException {
     RowType rowType =
-        RowType.of(new DataField(0, "stringArrayWithSpecialChars", new ArrayType(new VarCharType(255))));
+        RowType.of(
+            new DataField(0, "stringArrayWithSpecialChars", new ArrayType(new VarCharType(255))));
     converter.setRowType(rowType);
 
     // Create array with special characters that need JSON escaping
-    Object[] arrayData = new Object[] {
-        BinaryString.fromString("quote\"test"),
-        BinaryString.fromString("newline\ntest"),
-        BinaryString.fromString("backslash\\test"),
-        BinaryString.fromString("tab\ttest")
-    };
+    Object[] arrayData =
+        new Object[] {
+          BinaryString.fromString("quote\"test"),
+          BinaryString.fromString("newline\ntest"),
+          BinaryString.fromString("backslash\\test"),
+          BinaryString.fromString("tab\ttest")
+        };
     GenericArray array = new GenericArray(arrayData);
 
     GenericRow row = new GenericRow(1);
@@ -290,7 +289,8 @@ public class PaimonToAddDocumentConverterTest {
     AddDocumentRequest request = converter.convertRowToDocument(row);
 
     String arrayValue = getSingleValue(request, "stringArrayWithSpecialChars");
-    assertEquals("[\"quote\\\"test\",\"newline\\ntest\",\"backslash\\\\test\",\"tab\\ttest\"]", arrayValue);
+    assertEquals(
+        "[\"quote\\\"test\",\"newline\\ntest\",\"backslash\\\\test\",\"tab\\ttest\"]", arrayValue);
   }
 
   @Test

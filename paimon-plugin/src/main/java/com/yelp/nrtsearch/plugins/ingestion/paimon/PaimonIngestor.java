@@ -97,14 +97,16 @@ public class PaimonIngestor extends AbstractIngestor {
         // Start worker threads with explicit names
         for (int i = 0; i < paimonConfig.getWorkerThreads(); i++) {
           final int workerId = i;
-          executorService.submit(() -> {
-            Thread.currentThread().setName("paimon-worker-" + workerId);
-            workerLoop(workerId);
-          });
+          executorService.submit(
+              () -> {
+                Thread.currentThread().setName("paimon-worker-" + workerId);
+                workerLoop(workerId);
+              });
         }
 
-        LOGGER.info("Paimon ingestion started with {} workers, coordinator thread starting",
-                   paimonConfig.getWorkerThreads());
+        LOGGER.info(
+            "Paimon ingestion started with {} workers, coordinator thread starting",
+            paimonConfig.getWorkerThreads());
 
         // This thread now runs the coordinator loop directly (blocking until shutdown)
         coordinatorLoop();
@@ -314,14 +316,13 @@ public class PaimonIngestor extends AbstractIngestor {
         BucketWork bucketWork =
             workQueue.poll(paimonConfig.getPollTimeoutMs(), TimeUnit.MILLISECONDS);
         if (bucketWork != null) {
-          processBucketWork(bucketWork, workerId);
+          processBucketWork(bucketWork, workerId); // Never throws - handles all retries internally
         }
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         break;
-      } catch (Exception e) {
-        LOGGER.error("Error in worker {} loop", workerId, e);
       }
+      // No catch (Exception e) needed - processBucketWork never throws
     }
 
     LOGGER.info("Worker thread {} stopped", workerId);
@@ -329,66 +330,71 @@ public class PaimonIngestor extends AbstractIngestor {
 
   /**
    * Process a single bucket's worth of work. Maintains sequential ordering within the bucket for
-   * same keys.
+   * same keys. Retries indefinitely with exponential backoff until success or shutdown.
    */
   protected void processBucketWork(BucketWork bucketWork, int workerId) {
-    final int MAX_RETRIES = 3;
-    final long RETRY_BACKOFF_MS = 1000;
+    int attempt = 1;
+    long backoffMs = 1000; // Start with 1 second
 
-    for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    while (running.get()) {
       try {
-        processBucketAtomically(bucketWork, workerId, attempt, MAX_RETRIES);
+        processBucketAtomically(bucketWork, workerId, attempt);
 
-        // SUCCESS: Signal completion only after entire bucket succeeds
+        // SUCCESS: Signal completion and exit
         bucketWork.getBatch().markBucketComplete();
-        LOGGER.debug("Worker {} completed bucket {}", workerId, bucketWork.getBucketId());
-        return; // Exit retry loop
-
-      } catch (TransientProcessingException e) {
-        LOGGER.warn(
-            "Worker {} transient failure on bucket {} attempt {}/{}: {}",
+        LOGGER.info(
+            "Worker {} completed bucket {} after {} attempts",
             workerId,
             bucketWork.getBucketId(),
+            attempt);
+        return;
+
+      } catch (Exception e) {
+        // ALL exceptions are treated as transient - log and retry with backoff
+        LOGGER.warn(
+            "Worker {} attempt {} failed for bucket {} (next backoff: {}ms): {}",
+            workerId,
             attempt,
-            MAX_RETRIES,
+            bucketWork.getBucketId(),
+            backoffMs,
             e.getMessage());
+        LOGGER.debug(
+            "Full exception stack trace for bucket {} attempt {}:",
+            bucketWork.getBucketId(),
+            attempt,
+            e);
 
-        if (attempt == MAX_RETRIES) {
-          LOGGER.error(
-              "Worker {} PERMANENTLY FAILED bucket {} after {} attempts. Pipeline halted.",
-              workerId,
-              bucketWork.getBucketId(),
-              MAX_RETRIES);
-          // Safe Halt: Don't call markBucketComplete() - coordinator waits indefinitely
-          return;
-        }
-
-        // Exponential backoff for transient errors
-        sleepWithBackoff(RETRY_BACKOFF_MS, attempt);
+        // Sleep with exponential backoff (capped at 1 minute)
+        sleepWithBackoff(backoffMs);
+        backoffMs = Math.min(backoffMs * 2, 60000);
+        attempt++;
       }
     }
+
+    // Only exit if shutdown was requested
+    LOGGER.info(
+        "Worker {} stopped processing bucket {} due to shutdown after {} attempts",
+        workerId,
+        bucketWork.getBucketId(),
+        attempt - 1);
   }
 
   /** Atomic processing of all splits in a bucket with poison pill handling. */
-  private void processBucketAtomically(
-      BucketWork bucketWork, int workerId, int attempt, int maxRetries) {
+  private void processBucketAtomically(BucketWork bucketWork, int workerId, int attempt)
+      throws Exception {
     LOGGER.debug(
-        "Worker {} processing bucket {} attempt {}/{}",
-        workerId,
-        bucketWork.getBucketId(),
-        attempt,
-        maxRetries);
+        "Worker {} processing bucket {} attempt {}", workerId, bucketWork.getBucketId(), attempt);
 
     List<AddDocumentRequest> addDocumentRequests = new ArrayList<>();
     final AtomicLong lastFlushTime = new AtomicLong(System.currentTimeMillis());
     final long BATCH_TIMEOUT_MS = 5000;
 
-    try {
-      // Process each split sequentially to maintain ordering
-      for (Split split : bucketWork.getSplits()) {
-        try (RecordReader<InternalRow> reader = tableRead.createReader(split)) {
-          reader.forEachRemaining(
-              row -> {
+    // Process each split sequentially to maintain ordering
+    for (Split split : bucketWork.getSplits()) {
+      try (RecordReader<InternalRow> reader = tableRead.createReader(split)) {
+        reader.forEachRemaining(
+            row -> {
+              try {
                 processRowSafely(
                     row,
                     addDocumentRequests,
@@ -396,30 +402,21 @@ public class PaimonIngestor extends AbstractIngestor {
                     BATCH_TIMEOUT_MS,
                     workerId,
                     bucketWork.getBucketId());
-              });
-        }
+              } catch (Exception e) {
+                throw new RuntimeException(e);
+              }
+            });
       }
-
-      // Process final batch - TransientProcessingException will propagate up
-      flushBatch(
-          addDocumentRequests,
-          null,
-          System.currentTimeMillis(),
-          workerId,
-          bucketWork.getBucketId());
-
-    } catch (TransientProcessingException e) {
-      // Re-throw transient exceptions for retry logic
-      throw e;
-    } catch (Exception e) {
-      // Convert any other exception to TransientProcessingException for retry logic
-      throw new TransientProcessingException("Bucket processing failed", e);
     }
+
+    // Process final batch
+    flushBatch(
+        addDocumentRequests, null, System.currentTimeMillis(), workerId, bucketWork.getBucketId());
   }
 
   /**
-   * Process a single row with precise two-tier error handling. UnrecoverableConversionException =
-   * poison pills (log and skip). Everything else = transient errors (let propagate for retry).
+   * Process a single row with poison pill protection. UnrecoverableConversionException records are
+   * logged and skipped. Other errors propagate up for retry.
    */
   private void processRowSafely(
       InternalRow row,
@@ -427,7 +424,8 @@ public class PaimonIngestor extends AbstractIngestor {
       AtomicLong lastFlushTime,
       long batchTimeoutMs,
       int workerId,
-      int bucketId) {
+      int bucketId)
+      throws Exception {
     // POISON PILL PROTECTION: Only catch specific conversion errors
     AddDocumentRequest docRequest;
     try {
@@ -448,50 +446,34 @@ public class PaimonIngestor extends AbstractIngestor {
     boolean timeExpired = (currentTime - lastFlushTime.get()) >= batchTimeoutMs;
 
     if (sizeFull || timeExpired) {
-      // Let batch processing errors propagate up for retry
       flushBatch(addDocumentRequests, lastFlushTime, currentTime, workerId, bucketId);
     }
   }
 
-  /** Flush batch with transient error handling. Unified method for both timed and final batches. */
+  /** Flush batch with simple error handling. Unified method for both timed and final batches. */
   private void flushBatch(
       List<AddDocumentRequest> batch,
       AtomicLong lastFlushTime,
       long currentTime,
       int workerId,
-      int bucketId) {
+      int bucketId)
+      throws Exception {
     if (!batch.isEmpty()) {
-      try {
-        processBatch(batch, workerId, bucketId);
-        batch.clear();
-        // Only update flush time if lastFlushTime is provided (not null for timed batches)
-        if (lastFlushTime != null) {
-          lastFlushTime.set(currentTime);
-        }
-      } catch (Exception e) {
-        // TRANSIENT ERROR: Wrap in TransientProcessingException for consistent error handling
-        throw new TransientProcessingException("Batch processing failed - likely transient", e);
+      processBatch(batch, workerId, bucketId);
+      batch.clear();
+      // Only update flush time if lastFlushTime is provided (not null for timed batches)
+      if (lastFlushTime != null) {
+        lastFlushTime.set(currentTime);
       }
     }
   }
 
-  /** Sleep with exponential backoff for transient error recovery. */
-  private void sleepWithBackoff(long baseDelayMs, int attempt) {
+  /** Sleep with backoff for error recovery. */
+  private void sleepWithBackoff(long backoffMs) {
     try {
-      long delayMs = baseDelayMs * (1L << (attempt - 1)); // Exponential: 1s, 2s, 4s
-      Thread.sleep(delayMs);
+      Thread.sleep(backoffMs);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    }
-  }
-
-  /**
-   * Unchecked exception wrapper for transient processing errors that should be retried. Using
-   * RuntimeException simplifies method signatures while making error path explicit.
-   */
-  private static class TransientProcessingException extends RuntimeException {
-    public TransientProcessingException(String message, Throwable cause) {
-      super(message, cause);
     }
   }
 
@@ -499,6 +481,7 @@ public class PaimonIngestor extends AbstractIngestor {
   protected void processBatch(List<AddDocumentRequest> batch, int workerId, int bucketId)
       throws Exception {
     String indexName = paimonConfig.getTargetIndexName();
+
     long seqNum = addDocuments(batch, indexName);
     commit(indexName); // Commit after adding documents
     LOGGER.debug(

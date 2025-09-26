@@ -68,11 +68,18 @@ public class PaimonToAddDocumentConverter {
       DataField dataField = rowType.getFields().get(i);
       String paimonFieldName = dataField.name();
 
-      // Apply field mapping if configured
-      String nrtsearchFieldName =
-          fieldMapping != null && fieldMapping.containsKey(paimonFieldName)
-              ? fieldMapping.get(paimonFieldName)
-              : paimonFieldName;
+      // Apply field mapping if configured, but preserve __internal__ fields as-is
+      String nrtsearchFieldName;
+      if (paimonFieldName.startsWith("__internal__")) {
+        // Internal fields keep their original names
+        nrtsearchFieldName = paimonFieldName;
+      } else if (fieldMapping != null && fieldMapping.containsKey(paimonFieldName)) {
+        // Apply configured field mapping for regular fields
+        nrtsearchFieldName = fieldMapping.get(paimonFieldName);
+      } else {
+        // No mapping, use original name
+        nrtsearchFieldName = paimonFieldName;
+      }
 
       try {
         MultiValuedField field = convertField(row, i, nrtsearchFieldName, dataField);
@@ -263,11 +270,12 @@ public class PaimonToAddDocumentConverter {
   /** Escape special characters in JSON strings. */
   private String escapeJsonString(String input) {
     if (input == null) return "";
-    return input.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
+    return input
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t");
   }
 
   /** Convert Paimon map to JSON string representation. */

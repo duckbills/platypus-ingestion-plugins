@@ -110,6 +110,9 @@ public class PaimonIngestorTest {
     // We spy on 'ingestor' to mock out the actual Lucene interaction
     doNothing().when(ingestor).processBatch(any(), anyInt(), anyInt());
 
+    // Set running to true so processing happens
+    ingestor.getRunning().set(true);
+
     // Act
     ingestor.processBucketWork(bucketWork, 1);
 
@@ -156,24 +159,29 @@ public class PaimonIngestorTest {
         .when(ingestor)
         .processBatch(any(), anyInt(), anyInt());
 
+    // Set running to true so processing happens
+    ingestor.getRunning().set(true);
+
     // Act
     ingestor.processBucketWork(bucketWork, 1);
 
-    // Assert
-    verify(ingestor, atLeastOnce()).processBatch(any(), anyInt(), anyInt());
-    assertEquals("Should have processed exactly one document", 1, capturedDocuments.size());
+    // Assert - Final batch is always processed even if not full
+    verify(ingestor, times(1)).processBatch(any(), anyInt(), anyInt());
+    assertEquals(
+        "Should have processed exactly one document (poison pill skipped)",
+        1,
+        capturedDocuments.size());
     verify(mockBatch, times(1)).markBucketComplete();
   }
 
   @Test
-  public void testWorker_PermanentFailure_StopsRetryingAndDoesNotMarkComplete() throws Exception {
+  public void testWorker_ContinuousFailure_RetriesIndefinitelyUntilShutdown() throws Exception {
     // Arrange
     InFlightBatch mockBatch = mock(InFlightBatch.class);
     DataSplit mockSplit = mock(DataSplit.class);
     InternalRow mockRow = mock(InternalRow.class);
     PaimonIngestor.BucketWork bucketWork =
         new PaimonIngestor.BucketWork(1, List.of(mockSplit), mockBatch);
-    final int MAX_RETRIES = 3; // From implementation
 
     when(mockTableRead.createReader(mockSplit)).thenReturn(mockRecordReader);
     doAnswer(
@@ -185,17 +193,29 @@ public class PaimonIngestorTest {
         .when(mockRecordReader)
         .forEachRemaining(any());
 
-    // Simulate a permanent failure in the underlying batch processing
-    doThrow(new RuntimeException("DB is down!"))
+    // Use a counter to control when to stop failing and shut down
+    final int[] attemptCount = {0};
+    doAnswer(
+            invocation -> {
+              attemptCount[0]++;
+              if (attemptCount[0] >= 3) {
+                // After 3 attempts, shut down the ingestor to break the loop
+                ingestor.getRunning().set(false);
+              }
+              throw new RuntimeException("DB is down!");
+            })
         .when(ingestor)
         .processBatch(any(), anyInt(), anyInt());
 
-    // Act
+    // Start the ingestor running
+    ingestor.getRunning().set(true);
+
+    // Act - This will run until the counter shuts it down
     ingestor.processBucketWork(bucketWork, 1);
 
-    // Assert
-    verify(ingestor, times(MAX_RETRIES)).processBatch(any(), anyInt(), anyInt());
-    verify(mockBatch, never()).markBucketComplete(); // CRITICAL: This ensures the "Safe Halt"
+    // Assert - Should have retried 3 times but never completed
+    verify(ingestor, times(3)).processBatch(any(), anyInt(), anyInt());
+    verify(mockBatch, never()).markBucketComplete(); // Never completes due to continuous failure
   }
 
   // ============================================================================
@@ -281,6 +301,9 @@ public class PaimonIngestorTest {
         .when(ingestor)
         .processBatch(any(), anyInt(), anyInt());
 
+    // Set running to true so processing happens
+    ingestor.getRunning().set(true);
+
     // Act
     ingestor.processBucketWork(bucketWork, 1);
 
@@ -331,6 +354,9 @@ public class PaimonIngestorTest {
             })
         .when(ingestor)
         .processBatch(any(), anyInt(), anyInt());
+
+    // Set running to true so processing happens
+    ingestor.getRunning().set(true);
 
     // Act
     ingestor.processBucketWork(bucketWork, 1);
