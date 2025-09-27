@@ -9,6 +9,8 @@ Apache Paimon ingestion plugin for nrtsearch with Dynamic Shared Queue architect
 - **Ordering Guarantees**: Maintains ordering for same keys by sorting splits by sequence number within buckets
 - **Configurable Parallelism**: Adjustable worker threads for optimal throughput
 - **Field Mapping**: Flexible mapping between Paimon fields and nrtsearch index fields
+- **Field Dropping**: Drop unwanted fields by prefix to reduce index size and processing overhead
+- **ID-Based Sharding**: Distributed processing across multiple service instances using modulo arithmetic on primary keys
 
 ## Configuration
 
@@ -80,6 +82,15 @@ ingestionPluginConfigs:
     field.mapping:
       paimon_field_name: "nrtsearch_field_name"
       user_id: "userId"
+
+    # Field dropping (optional) - drop fields by prefix
+    field.drop.prefixes:
+      - "__internal__"
+      - "__debug_"
+      - "_temp_"
+
+    # ID-based sharding (optional) - for distributed processing
+    id_sharding_max: 30                            # Total number of shards
 ```
 
 ### S3A Configuration Details
@@ -100,6 +111,77 @@ The plugin includes a **custom S3ALoader** that extends Paimon's S3 support to h
 - **Solution**: Custom `S3ALoader` registers for `s3a://` scheme but uses the same underlying S3FileIO
 - **Service Discovery**: Registered via `META-INF/services/org.apache.paimon.fs.FileIOLoader`
 - **Credential Chain**: Uses DefaultAWSCredentialsProviderChain for maximum compatibility
+
+## Field Processing Features
+
+### Field Mapping
+
+Transform field names during ingestion to match your nrtsearch index schema:
+
+```yaml
+ingestionPluginConfigs:
+  paimon:
+    field.mapping:
+      source_user_id: "userId"          # Map 'source_user_id' to 'userId'
+      product_title: "title"            # Map 'product_title' to 'title'
+      internal_metadata: "metadata"     # Map 'internal_metadata' to 'metadata'
+```
+
+### Field Dropping
+
+Drop unwanted fields by prefix to reduce index size and processing overhead:
+
+```yaml
+ingestionPluginConfigs:
+  paimon:
+    field.drop.prefixes:
+      - "__internal__"                  # Drop all fields starting with '__internal__'
+      - "__debug_"                      # Drop all fields starting with '__debug_'
+      - "_temp_"                        # Drop all fields starting with '_temp_'
+      - "sys_"                          # Drop all fields starting with 'sys_'
+```
+
+**Processing Order**: Fields are first checked for dropping, then remaining fields are mapped if configured, otherwise kept with original names.
+
+## ID-Based Sharding
+
+For distributed processing across multiple nrtsearch instances, the plugin supports ID-based sharding using modulo arithmetic.
+
+### Configuration
+
+```yaml
+ingestionPluginConfigs:
+  paimon:
+    id_sharding_max: 30                 # Total number of shards (required)
+    # Service name must end with shard number: "nrtsearch-service-23"
+```
+
+### Service Name Requirements
+
+The plugin extracts the shard number from the service name:
+- **Format**: Service name must end with `-{number}` (e.g., `nrtsearch-paimon-service-23`)
+- **Shard Assignment**: Service processes records where `primary_key % id_sharding_max == service_number`
+- **Example**: With `id_sharding_max: 30` and service `nrtsearch-service-23`, processes records where `photo_id % 30 == 23`
+
+### How It Works
+
+1. **Primary Key Detection**: Uses the first primary key from the Paimon table schema as the sharding field
+2. **Modulo Filter**: Creates a predicate filter: `primary_key % id_sharding_max == service_number`
+3. **Distributed Processing**: Each service instance processes only its assigned shard of data
+4. **Fault Tolerance**: Service name parsing errors cause immediate startup failure for safety
+
+### Example Setup
+
+```yaml
+# Service: nrtsearch-photos-7
+ingestionPluginConfigs:
+  paimon:
+    database.name: "photos_db"
+    table.name: "photos"                # Table with primary key 'photo_id'
+    target.index.name: "photos-index"
+    id_sharding_max: 10                 # Total of 10 services (0-9)
+    # This service processes: photo_id % 10 == 7
+```
 
 ## Dependency Packaging
 

@@ -443,6 +443,250 @@ public class PaimonToAddDocumentConverterTest {
     assertTrue(request.getFieldsMap().isEmpty());
   }
 
+  @Test
+  public void testFieldDropFunctionality() throws UnrecoverableConversionException {
+    // Create a PaimonConfig with field drop prefixes
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("warehouse.path", "file:///tmp/test");
+    config.put("target.index.name", INDEX_NAME);
+    config.put("field.drop.prefixes", java.util.Arrays.asList("__internal__", "__debug_"));
+
+    PaimonConfig configWithDrop = new PaimonConfig(config);
+    PaimonToAddDocumentConverter converterWithDrop =
+        new PaimonToAddDocumentConverter(configWithDrop);
+
+    // Create a schema with fields that should and shouldn't be dropped
+    RowType rowType =
+        RowType.of(
+            new DataField(0, "user_id", new VarCharType(50)),
+            new DataField(1, "__internal__metadata", new VarCharType(100)),
+            new DataField(2, "title", new VarCharType(200)),
+            new DataField(3, "__debug_trace", new VarCharType(500)),
+            new DataField(4, "content", new VarCharType(1000)));
+    converterWithDrop.setRowType(rowType);
+
+    // Create row with data for all fields
+    GenericRow row = new GenericRow(5);
+    row.setField(0, BinaryString.fromString("user123"));
+    row.setField(1, BinaryString.fromString("internal_data"));
+    row.setField(2, BinaryString.fromString("Test Title"));
+    row.setField(3, BinaryString.fromString("debug_info"));
+    row.setField(4, BinaryString.fromString("Test Content"));
+
+    // Convert row to document
+    AddDocumentRequest request = converterWithDrop.convertRowToDocument(row);
+
+    // Verify that only non-dropped fields are present
+    assertEquals(INDEX_NAME, request.getIndexName());
+    assertTrue("Should contain user_id", request.getFieldsMap().containsKey("user_id"));
+    assertTrue("Should contain title", request.getFieldsMap().containsKey("title"));
+    assertTrue("Should contain content", request.getFieldsMap().containsKey("content"));
+
+    // Verify that dropped fields are NOT present
+    assertFalse(
+        "Should NOT contain __internal__metadata",
+        request.getFieldsMap().containsKey("__internal__metadata"));
+    assertFalse(
+        "Should NOT contain __debug_trace", request.getFieldsMap().containsKey("__debug_trace"));
+
+    // Verify we have exactly 3 fields (not 5)
+    assertEquals("Should have 3 fields after dropping 2", 3, request.getFieldsMap().size());
+
+    // Verify field values are correct
+    assertEquals("user123", getSingleValue(request, "user_id"));
+    assertEquals("Test Title", getSingleValue(request, "title"));
+    assertEquals("Test Content", getSingleValue(request, "content"));
+  }
+
+  @Test
+  public void testNoDropPrefixesConfigured() throws UnrecoverableConversionException {
+    // Create config without field drop prefixes
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("warehouse.path", "file:///tmp/test");
+    config.put("target.index.name", INDEX_NAME);
+    // No field.drop.prefixes configured
+
+    PaimonConfig configNoDrop = new PaimonConfig(config);
+    PaimonToAddDocumentConverter converterNoDrop = new PaimonToAddDocumentConverter(configNoDrop);
+
+    // Create schema with internal fields
+    RowType rowType =
+        RowType.of(
+            new DataField(0, "user_id", new VarCharType(50)),
+            new DataField(1, "__internal__metadata", new VarCharType(100)));
+    converterNoDrop.setRowType(rowType);
+
+    // Create row with data
+    GenericRow row = new GenericRow(2);
+    row.setField(0, BinaryString.fromString("user123"));
+    row.setField(1, BinaryString.fromString("internal_data"));
+
+    // Convert row to document
+    AddDocumentRequest request = converterNoDrop.convertRowToDocument(row);
+
+    // Verify that all fields are present (including internal ones)
+    assertTrue("Should contain user_id", request.getFieldsMap().containsKey("user_id"));
+    assertTrue(
+        "Should contain __internal__metadata",
+        request.getFieldsMap().containsKey("__internal__metadata"));
+    assertEquals("Should have all 2 fields", 2, request.getFieldsMap().size());
+
+    // Verify field values
+    assertEquals("user123", getSingleValue(request, "user_id"));
+    assertEquals("internal_data", getSingleValue(request, "__internal__metadata"));
+  }
+
+  @Test
+  public void testEmptyDropPrefixesList() throws UnrecoverableConversionException {
+    // Create config with empty field drop prefixes list
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("warehouse.path", "file:///tmp/test");
+    config.put("target.index.name", INDEX_NAME);
+    config.put("field.drop.prefixes", java.util.Collections.emptyList());
+
+    PaimonConfig configEmptyDrop = new PaimonConfig(config);
+    PaimonToAddDocumentConverter converterEmptyDrop =
+        new PaimonToAddDocumentConverter(configEmptyDrop);
+
+    // Create schema with internal fields
+    RowType rowType = RowType.of(new DataField(0, "__internal__test", new VarCharType(50)));
+    converterEmptyDrop.setRowType(rowType);
+
+    // Create row with data
+    GenericRow row = new GenericRow(1);
+    row.setField(0, BinaryString.fromString("test_value"));
+
+    // Convert row to document
+    AddDocumentRequest request = converterEmptyDrop.convertRowToDocument(row);
+
+    // Verify that field is present (empty drop list means no dropping)
+    assertTrue(
+        "Should contain __internal__test", request.getFieldsMap().containsKey("__internal__test"));
+    assertEquals("Should have 1 field", 1, request.getFieldsMap().size());
+    assertEquals("test_value", getSingleValue(request, "__internal__test"));
+  }
+
+  @Test
+  public void testFieldDropWithFieldMapping() throws UnrecoverableConversionException {
+    // Create config with both field drop and field mapping
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("warehouse.path", "file:///tmp/test");
+    config.put("target.index.name", INDEX_NAME);
+    config.put("field.drop.prefixes", java.util.Arrays.asList("__temp_"));
+
+    Map<String, String> fieldMapping = new HashMap<>();
+    fieldMapping.put("old_name", "new_name");
+    config.put("field.mapping", fieldMapping);
+
+    PaimonConfig configWithBoth = new PaimonConfig(config);
+    PaimonToAddDocumentConverter converterWithBoth =
+        new PaimonToAddDocumentConverter(configWithBoth);
+
+    // Create schema with mix of fields: drop, map, and keep as-is
+    RowType rowType =
+        RowType.of(
+            new DataField(0, "old_name", new VarCharType(50)), // Should be mapped to "new_name"
+            new DataField(1, "__temp_data", new VarCharType(100)), // Should be dropped
+            new DataField(2, "keep_as_is", new VarCharType(200)) // Should keep original name
+            );
+    converterWithBoth.setRowType(rowType);
+
+    // Create row with data
+    GenericRow row = new GenericRow(3);
+    row.setField(0, BinaryString.fromString("mapped_value"));
+    row.setField(1, BinaryString.fromString("dropped_value"));
+    row.setField(2, BinaryString.fromString("original_value"));
+
+    // Convert row to document
+    AddDocumentRequest request = converterWithBoth.convertRowToDocument(row);
+
+    // Verify field mapping and dropping worked correctly
+    assertTrue("Should contain new_name (mapped)", request.getFieldsMap().containsKey("new_name"));
+    assertTrue("Should contain keep_as_is", request.getFieldsMap().containsKey("keep_as_is"));
+    assertFalse(
+        "Should NOT contain old_name (original)", request.getFieldsMap().containsKey("old_name"));
+    assertFalse(
+        "Should NOT contain __temp_data (dropped)",
+        request.getFieldsMap().containsKey("__temp_data"));
+
+    // Verify we have exactly 2 fields (1 dropped, 1 mapped)
+    assertEquals("Should have 2 fields", 2, request.getFieldsMap().size());
+
+    // Verify field values
+    assertEquals("mapped_value", getSingleValue(request, "new_name"));
+    assertEquals("original_value", getSingleValue(request, "keep_as_is"));
+  }
+
+  @Test
+  public void testFieldDropVariousPrefixes() throws UnrecoverableConversionException {
+    // Test multiple drop prefixes and edge cases
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("warehouse.path", "file:///tmp/test");
+    config.put("target.index.name", INDEX_NAME);
+    config.put("field.drop.prefixes", java.util.Arrays.asList("_", "sys_", "tmp"));
+
+    PaimonConfig configMultiDrop = new PaimonConfig(config);
+    PaimonToAddDocumentConverter converterMultiDrop =
+        new PaimonToAddDocumentConverter(configMultiDrop);
+
+    // Create schema with various prefixes
+    RowType rowType =
+        RowType.of(
+            new DataField(0, "normal_field", new VarCharType(50)), // Keep
+            new DataField(1, "_private", new VarCharType(50)), // Drop (starts with "_")
+            new DataField(2, "sys_config", new VarCharType(50)), // Drop (starts with "sys_")
+            new DataField(3, "tmpdata", new VarCharType(50)), // Drop (starts with "tmp")
+            new DataField(
+                4,
+                "temp_file",
+                new VarCharType(50)), // Keep (doesn't start with "tmp", starts with "temp")
+            new DataField(
+                5,
+                "system",
+                new VarCharType(50)) // Keep (doesn't start with "sys_", starts with "system")
+            );
+    converterMultiDrop.setRowType(rowType);
+
+    // Create row with data
+    GenericRow row = new GenericRow(6);
+    row.setField(0, BinaryString.fromString("normal"));
+    row.setField(1, BinaryString.fromString("private"));
+    row.setField(2, BinaryString.fromString("config"));
+    row.setField(3, BinaryString.fromString("data"));
+    row.setField(4, BinaryString.fromString("temp"));
+    row.setField(5, BinaryString.fromString("sys"));
+
+    // Convert row to document
+    AddDocumentRequest request = converterMultiDrop.convertRowToDocument(row);
+
+    // Verify correct fields are kept and dropped
+    assertTrue("Should contain normal_field", request.getFieldsMap().containsKey("normal_field"));
+    assertTrue("Should contain temp_file", request.getFieldsMap().containsKey("temp_file"));
+    assertTrue("Should contain system", request.getFieldsMap().containsKey("system"));
+
+    assertFalse("Should NOT contain _private", request.getFieldsMap().containsKey("_private"));
+    assertFalse("Should NOT contain sys_config", request.getFieldsMap().containsKey("sys_config"));
+    assertFalse("Should NOT contain tmpdata", request.getFieldsMap().containsKey("tmpdata"));
+
+    // Verify we have exactly 3 fields (3 dropped)
+    assertEquals("Should have 3 fields after dropping 3", 3, request.getFieldsMap().size());
+
+    // Verify field values
+    assertEquals("normal", getSingleValue(request, "normal_field"));
+    assertEquals("temp", getSingleValue(request, "temp_file"));
+    assertEquals("sys", getSingleValue(request, "system"));
+  }
+
   // Helper method to get single value from MultiValuedField
   private String getSingleValue(AddDocumentRequest request, String fieldName) {
     MultiValuedField mvf = request.getFieldsMap().get(fieldName);

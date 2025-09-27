@@ -18,6 +18,7 @@ package com.yelp.nrtsearch.plugins.ingestion.paimon;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest.MultiValuedField;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.types.DataField;
@@ -34,6 +35,7 @@ public class PaimonToAddDocumentConverter {
 
   private final PaimonConfig paimonConfig;
   private final Map<String, String> fieldMapping;
+  private final List<String> fieldDropPrefixes;
 
   // Will be initialized when we have access to Paimon table schema
   private RowType rowType;
@@ -41,6 +43,7 @@ public class PaimonToAddDocumentConverter {
   public PaimonToAddDocumentConverter(PaimonConfig paimonConfig) {
     this.paimonConfig = paimonConfig;
     this.fieldMapping = paimonConfig.getFieldMapping();
+    this.fieldDropPrefixes = paimonConfig.getFieldDropPrefixes();
   }
 
   /**
@@ -68,13 +71,15 @@ public class PaimonToAddDocumentConverter {
       DataField dataField = rowType.getFields().get(i);
       String paimonFieldName = dataField.name();
 
-      // Apply field mapping if configured, but preserve __internal__ fields as-is
+      // Check if field should be dropped based on configured prefixes
+      if (shouldDropField(paimonFieldName)) {
+        continue; // Skip this field
+      }
+
+      // Apply field mapping if configured
       String nrtsearchFieldName;
-      if (paimonFieldName.startsWith("__internal__")) {
-        // Internal fields keep their original names
-        nrtsearchFieldName = paimonFieldName;
-      } else if (fieldMapping != null && fieldMapping.containsKey(paimonFieldName)) {
-        // Apply configured field mapping for regular fields
+      if (fieldMapping != null && fieldMapping.containsKey(paimonFieldName)) {
+        // Apply configured field mapping
         nrtsearchFieldName = fieldMapping.get(paimonFieldName);
       } else {
         // No mapping, use original name
@@ -300,6 +305,25 @@ public class PaimonToAddDocumentConverter {
       InternalRow nestedRow, org.apache.paimon.types.DataType dataType) {
     // Simplified JSON conversion - in production, use proper JSON library
     return "{\"nested\":\"row\"}"; // Placeholder implementation
+  }
+
+  /**
+   * Check if a field should be dropped based on configured prefixes.
+   *
+   * @param fieldName The field name to check
+   * @return true if the field should be dropped, false otherwise
+   */
+  private boolean shouldDropField(String fieldName) {
+    if (fieldDropPrefixes == null || fieldDropPrefixes.isEmpty()) {
+      return false;
+    }
+
+    for (String prefix : fieldDropPrefixes) {
+      if (fieldName.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

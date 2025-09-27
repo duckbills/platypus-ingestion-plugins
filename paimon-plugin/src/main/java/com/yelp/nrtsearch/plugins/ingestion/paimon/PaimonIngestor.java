@@ -37,6 +37,7 @@ import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.options.Options;
+import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
@@ -222,6 +223,19 @@ public class PaimonIngestor extends AbstractIngestor {
 
     // Create table read and stream scan
     ReadBuilder readBuilder = table.newReadBuilder();
+
+    // Apply ID sharding filter if configured
+    if (paimonConfig.getIdShardingMax() != null) {
+      int idShardingMax = paimonConfig.getIdShardingMax();
+      String serviceName = nrtSearchConfig.getServiceName();
+
+      LOGGER.info("Applying ID sharding with max: {}, service: {}", idShardingMax, serviceName);
+
+      Predicate shardingFilter =
+          ShardingFilterBuilder.buildShardingFilter(table, idShardingMax, serviceName);
+      readBuilder = readBuilder.withFilter(shardingFilter);
+    }
+
     this.tableRead = readBuilder.newRead();
     this.streamTableScan = readBuilder.newStreamScan();
 
@@ -306,18 +320,18 @@ public class PaimonIngestor extends AbstractIngestor {
           long batchDuration = System.currentTimeMillis() - batchStartTime;
 
           LOGGER.info(
-              "All workers completed checkpoint {} in {:.1f}s - {} buckets processed",
+              "All workers completed checkpoint {} in {}s - {} buckets processed",
               nextSnapshot,
-              batchDuration / 1000.0,
+              String.format("%.1f", batchDuration / 1000.0),
               splitsByBucket.size());
 
           // PHASE 4: COMMIT CHECKPOINT - Only happens after all work is done
           streamTableScan.notifyCheckpointComplete(nextSnapshot);
 
           LOGGER.info(
-              "Committed Paimon checkpoint {} - total processing time: {:.1f}s",
+              "Committed Paimon checkpoint {} - total processing time: {}s",
               nextSnapshot,
-              (System.currentTimeMillis() - batchStartTime) / 1000.0);
+              String.format("%.1f", (System.currentTimeMillis() - batchStartTime) / 1000.0));
         }
 
         // Sleep before next scan
@@ -393,20 +407,20 @@ public class PaimonIngestor extends AbstractIngestor {
 
         if (attempt == 1) {
           LOGGER.info(
-              "Worker {} completed bucket {} - {} splits, {:.2f} MB, ~{} docs",
+              "Worker {} completed bucket {} - {} splits, {} MB, ~{} docs",
               workerId,
               bucketWork.getBucketId(),
               bucketWork.getSplits().size(),
-              bucketDataSize / (1024.0 * 1024.0),
+              String.format("%.2f", bucketDataSize / (1024.0 * 1024.0)),
               totalDocuments);
         } else {
           LOGGER.info(
-              "Worker {} completed bucket {} after {} attempts - {} splits, {:.2f} MB, ~{} docs",
+              "Worker {} completed bucket {} after {} attempts - {} splits, {} MB, ~{} docs",
               workerId,
               bucketWork.getBucketId(),
               attempt,
               bucketWork.getSplits().size(),
-              bucketDataSize / (1024.0 * 1024.0),
+              String.format("%.2f", bucketDataSize / (1024.0 * 1024.0)),
               totalDocuments);
         }
         return;
@@ -556,13 +570,13 @@ public class PaimonIngestor extends AbstractIngestor {
 
     // Promote to INFO for visibility - this is key progress information
     LOGGER.info(
-        "Worker {} indexed {} docs from bucket {} in {}ms, seqNum: {}, throughput: {:.1f} docs/sec",
+        "Worker {} indexed {} docs from bucket {} in {}ms, seqNum: {}, throughput: {} docs/sec",
         workerId,
         batch.size(),
         bucketId,
         duration,
         seqNum,
-        duration > 0 ? (batch.size() * 1000.0 / duration) : 0.0);
+        String.format("%.1f", duration > 0 ? (batch.size() * 1000.0 / duration) : 0.0));
 
     // Log periodic summary statistics (every 5 minutes)
     long currentTime = System.currentTimeMillis();
@@ -706,12 +720,12 @@ public class PaimonIngestor extends AbstractIngestor {
 
       LOGGER.info(
           "=== PIPELINE SUMMARY === Total: {} docs in {} batches, "
-              + "Overall throughput: {:.1f} docs/sec, Avg batch: {:.0f} docs in {:.1f}ms",
+              + "Overall throughput: {} docs/sec, Avg batch: {} docs in {}ms",
           totalDocs,
           totalBatches,
-          overallThroughput,
-          avgBatchSize,
-          avgBatchTime);
+          String.format("%.1f", overallThroughput),
+          String.format("%.0f", avgBatchSize),
+          String.format("%.1f", avgBatchTime));
     }
   }
 }

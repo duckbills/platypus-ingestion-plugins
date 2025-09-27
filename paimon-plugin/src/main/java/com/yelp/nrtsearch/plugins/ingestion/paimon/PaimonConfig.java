@@ -15,6 +15,7 @@
  */
 package com.yelp.nrtsearch.plugins.ingestion.paimon;
 
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,6 +51,12 @@ public class PaimonConfig {
   // Field mapping configuration
   private final Map<String, String> fieldMapping;
 
+  // Field drop configuration
+  private final List<String> fieldDropPrefixes;
+
+  // ID sharding configuration
+  private final Integer idShardingMax;
+
   public PaimonConfig(Map<String, Object> config) {
     // Required configuration
     this.databaseName = getRequiredString(config, "database.name");
@@ -69,6 +76,14 @@ public class PaimonConfig {
     @SuppressWarnings("unchecked")
     Map<String, String> fieldMappingRaw = (Map<String, String>) config.get("field.mapping");
     this.fieldMapping = fieldMappingRaw;
+
+    // Field drop prefixes (optional)
+    @SuppressWarnings("unchecked")
+    List<String> fieldDropPrefixesRaw = (List<String>) config.get("field.drop.prefixes");
+    this.fieldDropPrefixes = fieldDropPrefixesRaw;
+
+    // ID sharding (optional)
+    this.idShardingMax = getOptionalInteger(config, "id_sharding_max");
 
     LOGGER.info(
         "Initialized PaimonConfig: database={}, table={}, tablePath={}, targetIndex={}, workerThreads={}, batchSize={}",
@@ -120,6 +135,22 @@ public class PaimonConfig {
     }
   }
 
+  private Integer getOptionalInteger(Map<String, Object> config, String key) {
+    Object value = config.get(key);
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof Integer) {
+      return (Integer) value;
+    }
+    try {
+      return Integer.parseInt(value.toString());
+    } catch (NumberFormatException e) {
+      LOGGER.warn("Invalid integer value for {}: {}, ignoring", key, value);
+      return null;
+    }
+  }
+
   // Getters
   public String getDatabaseName() {
     return databaseName;
@@ -163,5 +194,13 @@ public class PaimonConfig {
 
   public Map<String, String> getFieldMapping() {
     return fieldMapping;
+  }
+
+  public List<String> getFieldDropPrefixes() {
+    return fieldDropPrefixes;
+  }
+
+  public Integer getIdShardingMax() {
+    return idShardingMax;
   }
 }
