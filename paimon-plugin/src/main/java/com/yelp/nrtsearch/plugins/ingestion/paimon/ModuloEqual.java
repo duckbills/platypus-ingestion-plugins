@@ -104,9 +104,12 @@ public class ModuloEqual extends LeafFunction {
     String visitorClassName = visitor.getClass().getName();
 
     if (visitorClassName.contains("FilterPredicate") || visitorClassName.contains("Parquet")) {
-      // This is a Parquet filter visitor - return null to indicate no Parquet filtering
-      LOGGER.debug("Parquet visitor detected - returning null (no push-down filtering)");
-      return null;
+      // This is a Parquet filter visitor - throw UnsupportedOperationException
+      // so Paimon skips Parquet push-down but still applies row-level filtering
+      LOGGER.debug(
+          "Parquet visitor detected - throwing UnsupportedOperationException to force row-level filtering");
+      throw new UnsupportedOperationException(
+          "ModuloEqual cannot be converted to Parquet filter - will use row-level filtering");
     } else {
       // For other visitors (like OnlyPartitionKeyEqualVisitor), return false
       // meaning this predicate cannot be optimized/pushed down
@@ -116,11 +119,12 @@ public class ModuloEqual extends LeafFunction {
         LOGGER.debug("Boolean visitor detected - returning FALSE (no optimization)");
         return result;
       } catch (ClassCastException e) {
-        // Unknown visitor type - log and return null as safest option
+        // Unknown visitor type - throw exception to be safe
         LOGGER.warn(
-            "ModuloEqual.visit() called with unknown visitor type: {}. Returning null.",
+            "ModuloEqual.visit() called with unknown visitor type: {}. Throwing UnsupportedOperationException.",
             visitorClassName);
-        return null;
+        throw new UnsupportedOperationException(
+            "ModuloEqual does not support visitor type: " + visitorClassName);
       }
     }
   }
