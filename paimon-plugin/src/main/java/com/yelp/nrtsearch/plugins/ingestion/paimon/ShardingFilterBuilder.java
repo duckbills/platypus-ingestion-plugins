@@ -107,10 +107,19 @@ public class ShardingFilterBuilder {
 
     // Create custom modulo predicate
     ModuloEqual moduloPredicate = new ModuloEqual(shardingMax, serviceNumber);
+    LOGGER.info(
+        "Created ModuloEqual predicate: modulus={}, remainder={}", shardingMax, serviceNumber);
 
     // Create LeafPredicate (literals are ignored by ModuloEqual)
-    return new LeafPredicate(
-        moduloPredicate, idField.type(), idFieldIndex, idFieldName, Collections.emptyList());
+    LeafPredicate leafPredicate =
+        new LeafPredicate(
+            moduloPredicate, idField.type(), idFieldIndex, idFieldName, Collections.emptyList());
+    LOGGER.info(
+        "Created LeafPredicate for field '{}' (index={}, type={})",
+        idFieldName,
+        idFieldIndex,
+        idField.type());
+    return leafPredicate;
   }
 
   /**

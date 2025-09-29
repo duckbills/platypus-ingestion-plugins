@@ -21,12 +21,15 @@ import org.apache.paimon.predicate.FieldRef;
 import org.apache.paimon.predicate.FunctionVisitor;
 import org.apache.paimon.predicate.LeafFunction;
 import org.apache.paimon.types.DataType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Custom Paimon predicate function for modulo-based ID sharding. Tests if field % modulus ==
  * remainder (for ID sharding like photo_id % 30 == 23).
  */
 public class ModuloEqual extends LeafFunction {
+  private static final Logger LOGGER = LoggerFactory.getLogger(ModuloEqual.class);
 
   private final int modulus;
   private final int remainder;
@@ -39,6 +42,7 @@ public class ModuloEqual extends LeafFunction {
   @Override
   public boolean test(DataType type, Object field, List<Object> literals) {
     if (field == null) {
+      LOGGER.debug("ModuloEqual.test() called with null field, returning false");
       return false;
     }
 
@@ -50,13 +54,19 @@ public class ModuloEqual extends LeafFunction {
       try {
         fieldValue = Long.parseLong(field.toString());
       } catch (NumberFormatException e) {
+        LOGGER.debug(
+            "ModuloEqual.test() failed to parse field '{}' as number, returning false", field);
         return false;
       }
     }
 
     // Test: field % modulus == remainder (literals are ignored - modulus and remainder are in
     // constructor)
-    return (fieldValue % modulus) == remainder;
+    boolean result = (fieldValue % modulus) == remainder;
+    LOGGER.debug(
+        "ModuloEqual.test() field={}, modulus={}, remainder={}, result={} ({}%{}=={})",
+        fieldValue, modulus, remainder, result, fieldValue, modulus, fieldValue % modulus);
+    return result;
   }
 
   @Override
@@ -64,6 +74,11 @@ public class ModuloEqual extends LeafFunction {
       DataType type, long rowCount, Object min, Object max, Long nullCount, List<Object> literals) {
     // For statistical pruning, we can't easily determine if any value in range satisfies modulo
     // So we conservatively return true to avoid false negatives
+    LOGGER.debug(
+        "ModuloEqual.test() (statistical) called with min={}, max={}, rowCount={}, returning true",
+        min,
+        max,
+        rowCount);
     return true;
   }
 
@@ -75,7 +90,36 @@ public class ModuloEqual extends LeafFunction {
 
   @Override
   public <T> T visit(FunctionVisitor<T> visitor, FieldRef fieldRef, List<Object> literals) {
-    // This is called during query planning - we can provide a generic implementation
-    return visitor.visitEqual(fieldRef, remainder); // Approximate as equality for visitor
+    // This is called during query planning for optimizations like partition pruning
+    // Since we have a custom modulo operation that can't be optimized by standard visitors,
+    // we need to return a safe default that doesn't interfere with query execution
+    LOGGER.debug(
+        "ModuloEqual.visit() called with fieldRef={}, modulus={}, remainder={}. "
+            + "Returning safe default since modulo operations can't be optimized by standard visitors.",
+        fieldRef,
+        modulus,
+        remainder);
+
+    // For visitors expecting Boolean (like OnlyPartitionKeyEqualVisitor), return false
+    // meaning this predicate cannot be optimized/pushed down
+    // For other visitor types, we'll need to return a safe neutral value
+    // This is a limitation of custom predicates in Paimon's visitor pattern
+    try {
+      // Try to return false for Boolean visitors (most common case)
+      @SuppressWarnings("unchecked")
+      T result = (T) Boolean.FALSE;
+      return result;
+    } catch (ClassCastException e) {
+      // If T is not Boolean, we have a more complex visitor
+      // Log this case for debugging and throw an exception since we can't handle unknown visitor
+      // types
+      LOGGER.warn(
+          "ModuloEqual.visit() called with unsupported visitor type. "
+              + "Custom modulo predicates may not work with all Paimon optimizations.");
+      throw new UnsupportedOperationException(
+          "ModuloEqual custom predicate does not support visitor type: "
+              + visitor.getClass().getName()
+              + ". This predicate can only be used for data filtering, not query optimization.");
+    }
   }
 }

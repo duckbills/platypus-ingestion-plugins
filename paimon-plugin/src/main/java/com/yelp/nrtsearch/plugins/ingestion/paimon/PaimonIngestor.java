@@ -229,11 +229,22 @@ public class PaimonIngestor extends AbstractIngestor {
       int idShardingMax = paimonConfig.getIdShardingMax();
       String serviceName = nrtSearchConfig.getServiceName();
 
-      LOGGER.info("Applying ID sharding with max: {}, service: {}", idShardingMax, serviceName);
+      LOGGER.info("=== ID SHARDING FILTER CONFIGURATION ===");
+      LOGGER.info("ID sharding enabled - max: {}, service: {}", idShardingMax, serviceName);
+      LOGGER.info("Table primary keys: {}", table.primaryKeys());
+      LOGGER.info("Table schema: {}", table.rowType());
 
       Predicate shardingFilter =
           ShardingFilterBuilder.buildShardingFilter(table, idShardingMax, serviceName);
+
+      LOGGER.info("Created sharding filter predicate: {}", shardingFilter);
+      LOGGER.info("Predicate class: {}", shardingFilter.getClass().getSimpleName());
+
       readBuilder = readBuilder.withFilter(shardingFilter);
+      LOGGER.info("Applied sharding filter to ReadBuilder");
+      LOGGER.info("=== ID SHARDING FILTER APPLIED ===");
+    } else {
+      LOGGER.info("ID sharding not configured - processing all records");
     }
 
     this.tableRead = readBuilder.newRead();
@@ -467,10 +478,26 @@ public class PaimonIngestor extends AbstractIngestor {
 
     // Process each split sequentially to maintain ordering
     for (Split split : bucketWork.getSplits()) {
+      LOGGER.debug("Worker {} processing split: {}", workerId, split);
+
       try (RecordReader<InternalRow> reader = tableRead.createReader(split)) {
+        LOGGER.debug(
+            "Created RecordReader for split - reader class: {}", reader.getClass().getSimpleName());
+
+        AtomicLong rowCount = new AtomicLong(0);
         reader.forEachRemaining(
             row -> {
               try {
+                long currentRowNum = rowCount.incrementAndGet();
+
+                // Log every 1000th row to track progress and show filtering is working
+                if (currentRowNum % 1000 == 0) {
+                  LOGGER.debug(
+                      "Worker {} processed {} rows from current split so far",
+                      workerId,
+                      currentRowNum);
+                }
+
                 processRowSafely(
                     row,
                     addDocumentRequests,
@@ -482,6 +509,9 @@ public class PaimonIngestor extends AbstractIngestor {
                 throw new RuntimeException(e);
               }
             });
+
+        LOGGER.debug(
+            "Worker {} completed split - processed {} total rows", workerId, rowCount.get());
       }
     }
 
