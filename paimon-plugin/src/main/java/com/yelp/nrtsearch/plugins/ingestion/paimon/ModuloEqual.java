@@ -94,32 +94,34 @@ public class ModuloEqual extends LeafFunction {
     // Since we have a custom modulo operation that can't be optimized by standard visitors,
     // we need to return a safe default that doesn't interfere with query execution
     LOGGER.debug(
-        "ModuloEqual.visit() called with fieldRef={}, modulus={}, remainder={}. "
-            + "Returning safe default since modulo operations can't be optimized by standard visitors.",
+        "ModuloEqual.visit() called with visitor={}, fieldRef={}, modulus={}, remainder={}",
+        visitor.getClass().getSimpleName(),
         fieldRef,
         modulus,
         remainder);
 
-    // For visitors expecting Boolean (like OnlyPartitionKeyEqualVisitor), return false
-    // meaning this predicate cannot be optimized/pushed down
-    // For other visitor types, we'll need to return a safe neutral value
-    // This is a limitation of custom predicates in Paimon's visitor pattern
-    try {
-      // Try to return false for Boolean visitors (most common case)
-      @SuppressWarnings("unchecked")
-      T result = (T) Boolean.FALSE;
-      return result;
-    } catch (ClassCastException e) {
-      // If T is not Boolean, we have a more complex visitor
-      // Log this case for debugging and throw an exception since we can't handle unknown visitor
-      // types
-      LOGGER.warn(
-          "ModuloEqual.visit() called with unsupported visitor type. "
-              + "Custom modulo predicates may not work with all Paimon optimizations.");
-      throw new UnsupportedOperationException(
-          "ModuloEqual custom predicate does not support visitor type: "
-              + visitor.getClass().getName()
-              + ". This predicate can only be used for data filtering, not query optimization.");
+    // Check what type of visitor this is and handle accordingly
+    String visitorClassName = visitor.getClass().getName();
+
+    if (visitorClassName.contains("FilterPredicate") || visitorClassName.contains("Parquet")) {
+      // This is a Parquet filter visitor - return null to indicate no Parquet filtering
+      LOGGER.debug("Parquet visitor detected - returning null (no push-down filtering)");
+      return null;
+    } else {
+      // For other visitors (like OnlyPartitionKeyEqualVisitor), return false
+      // meaning this predicate cannot be optimized/pushed down
+      try {
+        @SuppressWarnings("unchecked")
+        T result = (T) Boolean.FALSE;
+        LOGGER.debug("Boolean visitor detected - returning FALSE (no optimization)");
+        return result;
+      } catch (ClassCastException e) {
+        // Unknown visitor type - log and return null as safest option
+        LOGGER.warn(
+            "ModuloEqual.visit() called with unknown visitor type: {}. Returning null.",
+            visitorClassName);
+        return null;
+      }
     }
   }
 }
