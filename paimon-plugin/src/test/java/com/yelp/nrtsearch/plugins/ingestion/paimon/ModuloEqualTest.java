@@ -15,17 +15,36 @@
  */
 package com.yelp.nrtsearch.plugins.ingestion.paimon;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.*;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Optional;
-import org.apache.paimon.predicate.FieldRef;
-import org.apache.paimon.predicate.FunctionVisitor;
-import org.apache.paimon.predicate.LeafFunction;
+import java.util.*;
+import java.util.function.Consumer;
+import org.apache.paimon.CoreOptions;
+import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.GenericRow;
+import org.apache.paimon.data.InternalRow;
+import org.apache.paimon.fs.FileIOFinder;
+import org.apache.paimon.fs.Path;
+import org.apache.paimon.fs.local.LocalFileIO;
+import org.apache.paimon.options.Options;
+import org.apache.paimon.predicate.*;
+import org.apache.paimon.reader.RecordReader;
+import org.apache.paimon.schema.Schema;
+import org.apache.paimon.schema.SchemaManager;
+import org.apache.paimon.schema.SchemaUtils;
+import org.apache.paimon.schema.TableSchema;
+import org.apache.paimon.table.AppendOnlyFileStoreTable;
+import org.apache.paimon.table.CatalogEnvironment;
+import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.table.sink.StreamTableCommit;
+import org.apache.paimon.table.sink.StreamTableWrite;
+import org.apache.paimon.table.source.TableScan;
 import org.apache.paimon.types.DataType;
+import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.RowType;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -42,11 +61,23 @@ public class ModuloEqualTest {
   @Mock private FieldRef mockFieldRef;
 
   private ModuloEqual moduloEqual;
+  private String commitUser;
+  private Path tablePath;
+
+  private static final RowType ROW_TYPE =
+      RowType.builder()
+          .field("id", DataTypes.INT())
+          .field("index_column", DataTypes.STRING())
+          .field("index_column2", DataTypes.INT())
+          .field("index_column3", DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()))
+          .build();
 
   @Before
-  public void setUp() {
+  public void setUp() throws Exception {
     // Test with modulus=10, remainder=3 (field % 10 == 3)
     moduloEqual = new ModuloEqual(10, 3);
+    commitUser = UUID.randomUUID().toString();
+    tablePath = new Path("/tmp/paimon-test-" + UUID.randomUUID().toString());
   }
 
   // ============================================================================
@@ -174,36 +205,36 @@ public class ModuloEqualTest {
   // ============================================================================
 
   @Test
-  public void testVisit_ReturnsSafeDefault() {
+  public void testVisit_ThrowsUnsupportedOperationException() {
     List<Object> literals = Arrays.asList(999); // Should be ignored
 
     // Create a Boolean visitor mock
     @SuppressWarnings("unchecked")
     FunctionVisitor<Boolean> booleanVisitor = mock(FunctionVisitor.class);
 
-    // For Boolean visitors, should return Boolean.FALSE (safe default)
-    Boolean result = moduloEqual.visit(booleanVisitor, mockFieldRef, literals);
-
-    assertEquals(Boolean.FALSE, result);
-    // Should NOT call any visitor methods since we return a safe default
+    // ModuloEqual cannot be pushed down to file-level filtering, so visit() throws
+    // UnsupportedOperationException to force row-level filtering via executeFilter()
+    assertThrows(
+        UnsupportedOperationException.class,
+        () -> moduloEqual.visit(booleanVisitor, mockFieldRef, literals));
+    // Should NOT call any visitor methods since we throw immediately
     verifyNoInteractions(booleanVisitor);
   }
 
   @Test
-  public void testVisit_AlwaysReturnsBooleanFalse() {
+  public void testVisit_AlwaysThrowsUnsupportedOperationException() {
     List<Object> literals = Arrays.asList(999);
 
-    // Test with different visitor types - should always return Boolean.FALSE
+    // Test with different visitor types - should always throw UnsupportedOperationException
     @SuppressWarnings("unchecked")
     FunctionVisitor<String> stringVisitor = mock(FunctionVisitor.class);
 
-    // Even though the visitor is typed as String, our method will try to return Boolean.FALSE
-    // This documents the limitation that custom predicates only work with Boolean visitors
-    Object result = moduloEqual.visit(stringVisitor, mockFieldRef, literals);
-    assertEquals(
-        "Should always return Boolean.FALSE regardless of visitor type", Boolean.FALSE, result);
+    // ModuloEqual cannot be pushed down, regardless of visitor type
+    assertThrows(
+        UnsupportedOperationException.class,
+        () -> moduloEqual.visit(stringVisitor, mockFieldRef, literals));
 
-    // Should NOT call any visitor methods since we return a safe default
+    // Should NOT call any visitor methods since we throw immediately
     verifyNoInteractions(stringVisitor);
   }
 
@@ -246,5 +277,106 @@ public class ModuloEqualTest {
     assertTrue(modOne.test(mockDataType, 1, Collections.emptyList()));
     assertTrue(modOne.test(mockDataType, 999, Collections.emptyList()));
     assertTrue(modOne.test(mockDataType, -5, Collections.emptyList()));
+  }
+
+  @Test
+  public void testModuloEqualDirectly() {
+    ModuloEqual modEqual = new ModuloEqual(10, 3);
+
+    // Test that our function works directly - literals are ignored
+    assertTrue(
+        "13 % 10 should equal 3", modEqual.test(DataTypes.INT(), 13, Collections.emptyList()));
+    assertTrue(
+        "23 % 10 should equal 3", modEqual.test(DataTypes.INT(), 23, Collections.emptyList()));
+    assertTrue(
+        "33 % 10 should equal 3", modEqual.test(DataTypes.INT(), 33, Collections.emptyList()));
+
+    assertFalse(
+        "14 % 10 should NOT equal 3", modEqual.test(DataTypes.INT(), 14, Collections.emptyList()));
+    assertFalse(
+        "25 % 10 should NOT equal 3", modEqual.test(DataTypes.INT(), 25, Collections.emptyList()));
+  }
+
+  @Test
+  public void testModuloEqualRowFiltering() throws Exception {
+    // Create table with simple integer data for testing modulo filtering
+    RowType rowType =
+        RowType.builder()
+            .field("id", DataTypes.INT())
+            .field("photo_id", DataTypes.INT()) // This will be our filtering field
+            .field("name", DataTypes.STRING())
+            .build();
+
+    FileStoreTable table = createUnawareBucketFileStoreTable(rowType, options -> {});
+
+    StreamTableWrite write = table.newWrite(commitUser);
+    StreamTableCommit commit = table.newCommit(commitUser);
+    List<CommitMessage> result = new ArrayList<>();
+
+    // Write test data: photo_ids with different modulo 10 values
+    write.write(GenericRow.of(1, 13, BinaryString.fromString("match1"))); // 13 % 10 = 3 ✓
+    write.write(GenericRow.of(2, 23, BinaryString.fromString("match2"))); // 23 % 10 = 3 ✓
+    write.write(GenericRow.of(3, 14, BinaryString.fromString("nomatch1"))); // 14 % 10 = 4 ✗
+    write.write(GenericRow.of(4, 25, BinaryString.fromString("nomatch2"))); // 25 % 10 = 5 ✗
+    write.write(GenericRow.of(5, 33, BinaryString.fromString("match3"))); // 33 % 10 = 3 ✓
+
+    result.addAll(write.prepareCommit(true, 0));
+    commit.commit(0, result);
+    result.clear();
+
+    // Create ModuloEqual predicate: photo_id % 10 == 3
+    ModuloEqual moduloEqual = new ModuloEqual(10, 3);
+    Predicate predicate =
+        new LeafPredicate(
+            moduloEqual,
+            DataTypes.INT(),
+            1, // field index for photo_id
+            "photo_id",
+            Collections.singletonList(0));
+
+    // Apply filter and scan
+    TableScan.Plan plan = table.newScan().plan();
+
+    // Read filtered results - executeFilter() is CRITICAL for custom predicates that can't be
+    // pushed down
+    RecordReader<InternalRow> reader =
+        table.newRead().withFilter(predicate).executeFilter().createReader(plan.splits());
+
+    List<String> results = new ArrayList<>();
+    reader.forEachRemaining(
+        row -> {
+          int photoId = row.getInt(1);
+          String name = row.getString(2).toString();
+          results.add(name);
+
+          // Verify that only matching rows are returned (photo_id % 10 == 3)
+          assertEquals(
+              "Expected photo_id % 10 == 3, but got " + photoId + " % 10 = " + (photoId % 10),
+              3,
+              photoId % 10);
+        });
+
+    // Should only return the 3 matching rows
+    assertThat(results).containsExactlyInAnyOrder("match1", "match2", "match3");
+    reader.close();
+  }
+
+  protected FileStoreTable createUnawareBucketFileStoreTable(
+      RowType rowType, Consumer<Options> configure) throws Exception {
+    Options conf = new Options();
+    conf.set(CoreOptions.PATH, tablePath.toString());
+    conf.set(CoreOptions.BUCKET, -1);
+    configure.accept(conf);
+    TableSchema tableSchema =
+        SchemaUtils.forceCommit(
+            new SchemaManager(LocalFileIO.create(), tablePath),
+            new Schema(
+                rowType.getFields(),
+                Collections.emptyList(),
+                Collections.emptyList(),
+                conf.toMap(),
+                ""));
+    return new AppendOnlyFileStoreTable(
+        FileIOFinder.find(tablePath), tablePath, tableSchema, CatalogEnvironment.empty());
   }
 }

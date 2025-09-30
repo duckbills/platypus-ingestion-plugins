@@ -35,6 +35,10 @@ dependencies {
     testImplementation libs.junit
     testRuntimeOnly libs.junit.vintage.engine
 
+    // Paimon test utilities
+    testImplementation('org.apache.paimon:paimon-core:1.4-SNAPSHOT:tests')
+    testImplementation('org.apache.paimon:paimon-common:1.4-SNAPSHOT:tests')
+
     // --- Needed for gRPC client and full NrtSearch tests ---
     testImplementation libs.grpc.netty.shaded
     testImplementation libs.protobuf.java

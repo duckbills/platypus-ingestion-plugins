@@ -20,6 +20,7 @@ import java.util.Optional;
 import org.apache.paimon.predicate.FieldRef;
 import org.apache.paimon.predicate.FunctionVisitor;
 import org.apache.paimon.predicate.LeafFunction;
+import org.apache.paimon.predicate.NullFalseLeafBinaryFunction;
 import org.apache.paimon.types.DataType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,7 +29,7 @@ import org.slf4j.LoggerFactory;
  * Custom Paimon predicate function for modulo-based ID sharding. Tests if field % modulus ==
  * remainder (for ID sharding like photo_id % 30 == 23).
  */
-public class ModuloEqual extends LeafFunction {
+public class ModuloEqual extends NullFalseLeafBinaryFunction {
   private static final Logger LOGGER = LoggerFactory.getLogger(ModuloEqual.class);
 
   private final int modulus;
@@ -41,6 +42,15 @@ public class ModuloEqual extends LeafFunction {
 
   @Override
   public boolean test(DataType type, Object field, List<Object> literals) {
+    // Override parent's test() to ignore literals and call our implementation directly
+    // This prevents IndexOutOfBoundsException when literals is empty
+    return test(type, field, (Object) null);
+  }
+
+  @Override
+  public boolean test(DataType type, Object field, Object literal) {
+    LOGGER.debug("ModuloEqual.test(field, literal) called: field={}, literal={}", field, literal);
+
     if (field == null) {
       LOGGER.debug("ModuloEqual.test() called with null field, returning false");
       return false;
@@ -60,7 +70,7 @@ public class ModuloEqual extends LeafFunction {
       }
     }
 
-    // Test: field % modulus == remainder (literals are ignored - modulus and remainder are in
+    // Test: field % modulus == remainder (literal is ignored - modulus and remainder are in
     // constructor)
     boolean result = (fieldValue % modulus) == remainder;
     LOGGER.debug(
@@ -72,6 +82,13 @@ public class ModuloEqual extends LeafFunction {
   @Override
   public boolean test(
       DataType type, long rowCount, Object min, Object max, Long nullCount, List<Object> literals) {
+    // Override parent's statistical test() to ignore literals and call our implementation
+    return test(type, rowCount, min, max, nullCount, (Object) null);
+  }
+
+  @Override
+  public boolean test(
+      DataType type, long rowCount, Object min, Object max, Long nullCount, Object literal) {
     // For statistical pruning, we can't easily determine if any value in range satisfies modulo
     // So we conservatively return true to avoid false negatives
     LOGGER.debug(
@@ -88,44 +105,19 @@ public class ModuloEqual extends LeafFunction {
     return Optional.empty();
   }
 
+  // Replace the entire visit() method in ModuloEqual.java
+
   @Override
   public <T> T visit(FunctionVisitor<T> visitor, FieldRef fieldRef, List<Object> literals) {
-    // This is called during query planning for optimizations like partition pruning
-    // Since we have a custom modulo operation that can't be optimized by standard visitors,
-    // we need to return a safe default that doesn't interfere with query execution
+    // ModuloEqual is a custom function that cannot be pushed down to file-level filtering.
+    // We throw UnsupportedOperationException to signal that this predicate
+    // must be evaluated at the row level using our test() method.
+    // The caller must use executeFilter() to enable row-level filtering.
     LOGGER.debug(
-        "ModuloEqual.visit() called with visitor={}, fieldRef={}, modulus={}, remainder={}",
+        "ModuloEqual.visit() called with visitor={}, fieldRef={}. Throwing UnsupportedOperationException to force row-level filtering.",
         visitor.getClass().getSimpleName(),
-        fieldRef,
-        modulus,
-        remainder);
-
-    // Check what type of visitor this is and handle accordingly
-    String visitorClassName = visitor.getClass().getName();
-
-    if (visitorClassName.contains("FilterPredicate") || visitorClassName.contains("Parquet")) {
-      // This is a Parquet filter visitor - throw UnsupportedOperationException
-      // so Paimon skips Parquet push-down but still applies row-level filtering
-      LOGGER.debug(
-          "Parquet visitor detected - throwing UnsupportedOperationException to force row-level filtering");
-      throw new UnsupportedOperationException(
-          "ModuloEqual cannot be converted to Parquet filter - will use row-level filtering");
-    } else {
-      // For other visitors (like OnlyPartitionKeyEqualVisitor), return false
-      // meaning this predicate cannot be optimized/pushed down
-      try {
-        @SuppressWarnings("unchecked")
-        T result = (T) Boolean.FALSE;
-        LOGGER.debug("Boolean visitor detected - returning FALSE (no optimization)");
-        return result;
-      } catch (ClassCastException e) {
-        // Unknown visitor type - throw exception to be safe
-        LOGGER.warn(
-            "ModuloEqual.visit() called with unknown visitor type: {}. Throwing UnsupportedOperationException.",
-            visitorClassName);
-        throw new UnsupportedOperationException(
-            "ModuloEqual does not support visitor type: " + visitorClassName);
-      }
-    }
+        fieldRef.name());
+    throw new UnsupportedOperationException(
+        "ModuloEqual cannot be optimized - must use row-level filtering");
   }
 }

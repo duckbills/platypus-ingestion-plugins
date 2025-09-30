@@ -247,8 +247,15 @@ public class PaimonIngestor extends AbstractIngestor {
       LOGGER.info("ID sharding not configured - processing all records");
     }
 
-    this.tableRead = readBuilder.newRead();
     this.streamTableScan = readBuilder.newStreamScan();
+
+    // Create TableRead with executeFilter() to enable row-level filtering for custom predicates
+    // like ModuloEqual that cannot be pushed down to file-level filtering
+    this.tableRead = readBuilder.newRead();
+    if (paimonConfig.getIdShardingMax() != null) {
+      this.tableRead = this.tableRead.executeFilter();
+      LOGGER.info("Enabled row-level filtering via executeFilter() for ModuloEqual predicate");
+    }
 
     LOGGER.info("Successfully initialized Paimon table: {}", paimonConfig.getTablePath());
   }
