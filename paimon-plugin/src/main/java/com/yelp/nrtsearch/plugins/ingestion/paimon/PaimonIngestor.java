@@ -235,7 +235,7 @@ public class PaimonIngestor extends AbstractIngestor {
       LOGGER.info("Table schema: {}", table.rowType());
 
       Predicate shardingFilter =
-          ShardingFilterBuilder.buildShardingFilter(table, idShardingMax, serviceName);
+          ShardingFilterBuilder.buildPartitionFilter(table, idShardingMax, serviceName);
 
       LOGGER.info("Created sharding filter predicate: {}", shardingFilter);
       LOGGER.info("Predicate class: {}", shardingFilter.getClass().getSimpleName());

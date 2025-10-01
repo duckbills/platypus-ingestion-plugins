@@ -298,6 +298,68 @@ public class ModuloEqualTest {
   }
 
   @Test
+  public void testPartitionColFiltering() throws Exception {
+    // Create table with simple integer data for testing modulo filtering
+    RowType rowType =
+        RowType.builder()
+            .field("id", DataTypes.INT())
+            .field("nrtsearch_partition", DataTypes.INT()) // partition field
+            .field("name", DataTypes.STRING())
+            .build();
+
+    FileStoreTable table =
+        createUnawareBucketFileStoreTable(
+            rowType, options -> {}, List.of("nrtsearch_partition"), List.of("id"));
+
+    StreamTableWrite write = table.newWrite(commitUser);
+    StreamTableCommit commit = table.newCommit(commitUser);
+    List<CommitMessage> result = new ArrayList<>();
+
+    // Write test data: photo_ids with different modulo 10 values
+    write.write(GenericRow.of(1, 3, BinaryString.fromString("match1"))); // 13 % 10 = 3 ✓
+    write.write(GenericRow.of(2, 3, BinaryString.fromString("match2"))); // 23 % 10 = 3 ✓
+    write.write(GenericRow.of(3, 4, BinaryString.fromString("nomatch1"))); // 14 % 10 = 4 ✗
+    write.write(GenericRow.of(4, 5, BinaryString.fromString("nomatch2"))); // 25 % 10 = 5 ✗
+    write.write(GenericRow.of(5, 3, BinaryString.fromString("match3"))); // 33 % 10 = 3 ✓
+
+    result.addAll(write.prepareCommit(true, 0));
+    commit.commit(0, result);
+    result.clear();
+
+    // create partition column filtering
+    Predicate pd = new PredicateBuilder(rowType).equal(1, 3);
+
+    // Apply filter and scan
+    TableScan.Plan plan = table.newScan().plan();
+
+    // Read filtered results - executeFilter() is CRITICAL for custom predicates that can't be
+    // pushed down
+    RecordReader<InternalRow> reader =
+        table.newRead().withFilter(pd).executeFilter().createReader(plan.splits());
+
+    List<String> results = new ArrayList<>();
+    reader.forEachRemaining(
+        row -> {
+          int nrtsearch_partition = row.getInt(1);
+          String name = row.getString(2).toString();
+          results.add(name);
+
+          // Verify that only matching rows are returned (nrtsearch_partition == 3)
+          assertEquals(
+              "Expected nrtsearch_partition == 3, but got "
+                  + nrtsearch_partition
+                  + " = "
+                  + nrtsearch_partition,
+              3,
+              nrtsearch_partition);
+        });
+
+    // Should only return the 3 matching rows
+    assertThat(results).containsExactlyInAnyOrder("match1", "match2", "match3");
+    reader.close();
+  }
+
+  @Test
   public void testModuloEqualRowFiltering() throws Exception {
     // Create table with simple integer data for testing modulo filtering
     RowType rowType =
@@ -307,7 +369,9 @@ public class ModuloEqualTest {
             .field("name", DataTypes.STRING())
             .build();
 
-    FileStoreTable table = createUnawareBucketFileStoreTable(rowType, options -> {});
+    FileStoreTable table =
+        createUnawareBucketFileStoreTable(
+            rowType, options -> {}, Collections.emptyList(), Collections.emptyList());
 
     StreamTableWrite write = table.newWrite(commitUser);
     StreamTableCommit commit = table.newCommit(commitUser);
@@ -362,7 +426,11 @@ public class ModuloEqualTest {
   }
 
   protected FileStoreTable createUnawareBucketFileStoreTable(
-      RowType rowType, Consumer<Options> configure) throws Exception {
+      RowType rowType,
+      Consumer<Options> configure,
+      List<String> partitionKeys,
+      List<String> primaryKeys)
+      throws Exception {
     Options conf = new Options();
     conf.set(CoreOptions.PATH, tablePath.toString());
     conf.set(CoreOptions.BUCKET, -1);
@@ -370,12 +438,7 @@ public class ModuloEqualTest {
     TableSchema tableSchema =
         SchemaUtils.forceCommit(
             new SchemaManager(LocalFileIO.create(), tablePath),
-            new Schema(
-                rowType.getFields(),
-                Collections.emptyList(),
-                Collections.emptyList(),
-                conf.toMap(),
-                ""));
+            new Schema(rowType.getFields(), partitionKeys, primaryKeys, conf.toMap(), ""));
     return new AppendOnlyFileStoreTable(
         FileIOFinder.find(tablePath), tablePath, tableSchema, CatalogEnvironment.empty());
   }
