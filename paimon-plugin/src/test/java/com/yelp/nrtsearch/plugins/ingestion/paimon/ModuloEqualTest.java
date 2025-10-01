@@ -315,12 +315,12 @@ public class ModuloEqualTest {
     StreamTableCommit commit = table.newCommit(commitUser);
     List<CommitMessage> result = new ArrayList<>();
 
-    // Write test data: photo_ids with different modulo 10 values
-    write.write(GenericRow.of(1, 3, BinaryString.fromString("match1"))); // 13 % 10 = 3 ✓
-    write.write(GenericRow.of(2, 3, BinaryString.fromString("match2"))); // 23 % 10 = 3 ✓
-    write.write(GenericRow.of(3, 4, BinaryString.fromString("nomatch1"))); // 14 % 10 = 4 ✗
-    write.write(GenericRow.of(4, 5, BinaryString.fromString("nomatch2"))); // 25 % 10 = 5 ✗
-    write.write(GenericRow.of(5, 3, BinaryString.fromString("match3"))); // 33 % 10 = 3 ✓
+    // Write test data: nrtsearch_partition with different values
+    write.write(GenericRow.of(1, 3, BinaryString.fromString("match1"))); // ✓
+    write.write(GenericRow.of(2, 3, BinaryString.fromString("match2"))); // ✓
+    write.write(GenericRow.of(3, 4, BinaryString.fromString("nomatch1"))); // ✗
+    write.write(GenericRow.of(4, 5, BinaryString.fromString("nomatch2"))); // ✗
+    write.write(GenericRow.of(5, 3, BinaryString.fromString("match3"))); // ✓
 
     result.addAll(write.prepareCommit(true, 0));
     commit.commit(0, result);
