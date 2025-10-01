@@ -16,9 +16,12 @@
 package com.yelp.nrtsearch.plugins.ingestion.paimon;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.apache.paimon.predicate.LeafPredicate;
 import org.apache.paimon.predicate.Predicate;
+import org.apache.paimon.predicate.PredicateBuilder;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.RowType;
@@ -75,6 +78,17 @@ public class ShardingFilterBuilder {
   public static Predicate buildShardingFilter(Table table, int shardingMax, String serviceName) {
     int serviceNumber = extractServiceNumber(serviceName);
     return buildShardingFilter(table, shardingMax, serviceNumber);
+  }
+
+  public static Predicate buildPartitionFilter(Table table, int shardingMax, String serviceName) {
+    int serviceNumber = extractServiceNumber(serviceName);
+    Set<String> partitionKeys = new HashSet<>(table.partitionKeys());
+    if (partitionKeys.isEmpty() || !partitionKeys.contains("nrtsearch_partition")) {
+      throw new IllegalArgumentException(
+          "Table either has no partition keys or does not have nrtsearch_partition as one of partition keys, cannot apply ID sharding");
+    }
+    int partitionFieldId = findFieldIndex(table.rowType(), "nrtsearch_partition");
+    return new PredicateBuilder(table.rowType()).equal(partitionFieldId, serviceNumber);
   }
 
   /**
