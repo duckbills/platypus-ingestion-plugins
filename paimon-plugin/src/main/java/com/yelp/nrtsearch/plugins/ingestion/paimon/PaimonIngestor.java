@@ -225,8 +225,8 @@ public class PaimonIngestor extends AbstractIngestor {
     ReadBuilder readBuilder = table.newReadBuilder();
 
     // Apply ID sharding filter if configured
-    if (paimonConfig.getIdShardingMax() != null) {
-      int idShardingMax = paimonConfig.getIdShardingMax();
+    Integer idShardingMax = paimonConfig.getIdShardingMax();
+    if (idShardingMax != null) {
       String serviceName = nrtSearchConfig.getServiceName();
 
       LOGGER.info("=== ID SHARDING FILTER CONFIGURATION ===");
@@ -248,11 +248,8 @@ public class PaimonIngestor extends AbstractIngestor {
     }
 
     this.streamTableScan = readBuilder.newStreamScan();
-
-    // Create TableRead with executeFilter() to enable row-level filtering for custom predicates
-    // like ModuloEqual that cannot be pushed down to file-level filtering
     this.tableRead = readBuilder.newRead();
-    if (paimonConfig.getIdShardingMax() != null) {
+    if (idShardingMax != null) {
       this.tableRead = this.tableRead.executeFilter();
       LOGGER.info("Enabled row-level filtering via executeFilter() for ModuloEqual predicate");
     }
