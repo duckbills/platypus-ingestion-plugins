@@ -103,6 +103,7 @@ public class PaimonRowProcessor {
    */
   public void processRow(InternalRow row) throws Exception {
     RowKind kind = row.getRowKind();
+    logger.debug("Processing row with RowKind: {}", kind);
 
     switch (kind) {
       case UPDATE_BEFORE:
@@ -111,12 +112,16 @@ public class PaimonRowProcessor {
         // messages for updates so upsert mode is fine i.e. only after image
         // TODO: Sometimes we might need to send -U (deletes) for these to nrtsearch but doing so on
         // all -U,+U updates causes 2x indexing load.
+        logger.debug("Skipping UPDATE_BEFORE row");
         break;
 
       case UPDATE_AFTER:
       case INSERT:
         // Flush deletes if switching from DELETE to ADD
         if (lastOp == OperationType.DELETE && !deleteBatch.isEmpty()) {
+          logger.debug(
+              "Type transition: DELETE→ADD, flushing {} delete(s) before adding",
+              deleteBatch.size());
           flushDeletes();
         }
         // Batch the add/update with poison pill protection
@@ -129,17 +134,25 @@ public class PaimonRowProcessor {
           break; // Skip this record
         }
         addBatch.add(docRequest);
+        logger.debug(
+            "Batched {} for ADD (batch size: {})",
+            kind == RowKind.INSERT ? "INSERT" : "UPDATE_AFTER",
+            addBatch.size());
         lastOp = OperationType.ADD;
         break;
 
       case DELETE:
         // Flush adds if switching from ADD to DELETE
         if (lastOp == OperationType.ADD && !addBatch.isEmpty()) {
+          logger.debug(
+              "Type transition: ADD→DELETE, flushing {} add(s) before deleting", addBatch.size());
           flushAdds();
         }
         // Batch the delete (initializer handles caching internally)
         IdFieldInfo idInfo = idFieldInitializer.initializeIdField();
-        deleteBatch.add(extractIdValue(row, idInfo.fieldIndex));
+        Object idValue = extractIdValue(row, idInfo.fieldIndex);
+        deleteBatch.add(idValue);
+        logger.debug("Batched DELETE for id: {} (batch size: {})", idValue, deleteBatch.size());
         lastOp = OperationType.DELETE;
         break;
 
@@ -157,7 +170,11 @@ public class PaimonRowProcessor {
     boolean hasDeletes = !deleteBatch.isEmpty();
     boolean hasAdds = !addBatch.isEmpty();
 
+    logger.debug(
+        "flush() called - hasDeletes: {}, hasAdds: {}, lastOp: {}", hasDeletes, hasAdds, lastOp);
+
     if (!hasDeletes && !hasAdds) {
+      logger.debug("No operations to flush");
       return;
     }
 
@@ -184,18 +201,20 @@ public class PaimonRowProcessor {
   }
 
   private void flushDeletes() throws Exception {
+    logger.debug("flushDeletes() - flushing {} delete(s)", deleteBatch.size());
     IdFieldInfo idInfo = idFieldInitializer.initializeIdField();
     Query deleteQuery = buildDeleteQuery(deleteBatch, idInfo.fieldName);
     ingestor.deleteByQuery(List.of(deleteQuery), indexName);
     ingestor.commit(indexName);
-    logger.debug("Flushed {} deletes", deleteBatch.size());
+    logger.debug("Successfully flushed {} deletes", deleteBatch.size());
     deleteBatch.clear();
   }
 
   private void flushAdds() throws Exception {
+    logger.debug("flushAdds() - flushing {} add(s)", addBatch.size());
     ingestor.addDocuments(addBatch, indexName);
     ingestor.commit(indexName);
-    logger.debug("Flushed {} adds", addBatch.size());
+    logger.debug("Successfully flushed {} adds", addBatch.size());
     addBatch.clear();
   }
 
