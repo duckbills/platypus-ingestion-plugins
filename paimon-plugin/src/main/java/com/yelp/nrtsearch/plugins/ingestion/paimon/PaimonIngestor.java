@@ -15,8 +15,8 @@
  */
 package com.yelp.nrtsearch.plugins.ingestion.paimon;
 
-import com.yelp.nrtsearch.plugins.ingestion.paimon.PaimonToAddDocumentConverter.UnrecoverableConversionException;
 import com.yelp.nrtsearch.server.config.NrtsearchConfig;
+import com.yelp.nrtsearch.server.field.IdFieldDef;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
 import com.yelp.nrtsearch.server.ingestion.AbstractIngestor;
 import java.io.IOException;
@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -63,6 +64,11 @@ public class PaimonIngestor extends AbstractIngestor {
   private final AtomicBoolean running;
   private final PaimonConfig paimonConfig;
   private PaimonToAddDocumentConverter converter;
+
+  // _ID field metadata (lazy initialized)
+  private volatile String idFieldName;
+  private volatile int paimonIdFieldIndex = -1;
+  private final Object idFieldInitLock = new Object();
 
   // Statistics tracking
   private final AtomicLong totalDocumentsProcessed = new AtomicLong(0);
@@ -220,7 +226,6 @@ public class PaimonIngestor extends AbstractIngestor {
     this.table = ((FileStoreTable) baseTable).copy(consumerOptions);
     // Initialize converter with table schema
     converter.setRowType(table.rowType());
-
     // Create table read and stream scan
     ReadBuilder readBuilder = table.newReadBuilder();
 
@@ -399,7 +404,7 @@ public class PaimonIngestor extends AbstractIngestor {
    */
   protected void processBucketWork(BucketWork bucketWork, int workerId) {
     int attempt = 1;
-    long backoffMs = 1000; // Start with 1 second
+    long backoffMs = 100; // Start with 100ms for faster retries during index initialization
 
     while (running.get()) {
       try {
@@ -470,15 +475,17 @@ public class PaimonIngestor extends AbstractIngestor {
         attempt - 1);
   }
 
-  /** Atomic processing of all splits in a bucket with poison pill handling. */
+  /** Atomic processing of all splits in a bucket with ordering guarantees. */
   private void processBucketAtomically(BucketWork bucketWork, int workerId, int attempt)
       throws Exception {
     LOGGER.debug(
         "Worker {} processing bucket {} attempt {}", workerId, bucketWork.getBucketId(), attempt);
 
-    List<AddDocumentRequest> addDocumentRequests = new ArrayList<>();
-    final AtomicLong lastFlushTime = new AtomicLong(System.currentTimeMillis());
-    final long BATCH_TIMEOUT_MS = 5000;
+    // Create PaimonRowProcessor for this bucket - handles ordering and batching
+    String indexName = paimonConfig.getTargetIndexName();
+    PaimonRowProcessor processor =
+        new PaimonRowProcessor(
+            indexName, this::ensureIdFieldInitialized, converter, this, table.rowType());
 
     // Process each split sequentially to maintain ordering
     for (Split split : bucketWork.getSplits()) {
@@ -502,13 +509,7 @@ public class PaimonIngestor extends AbstractIngestor {
                       currentRowNum);
                 }
 
-                processRowSafely(
-                    row,
-                    addDocumentRequests,
-                    lastFlushTime,
-                    BATCH_TIMEOUT_MS,
-                    workerId,
-                    bucketWork.getBucketId());
+                processor.processRow(row);
               } catch (Exception e) {
                 throw new RuntimeException(e);
               }
@@ -519,63 +520,83 @@ public class PaimonIngestor extends AbstractIngestor {
       }
     }
 
-    // Process final batch
-    flushBatch(
-        addDocumentRequests, null, System.currentTimeMillis(), workerId, bucketWork.getBucketId());
+    // Flush any remaining operations
+    processor.flush();
+
+    LOGGER.debug("Worker {} completed bucket {}", workerId, bucketWork.getBucketId());
   }
 
   /**
-   * Process a single row with poison pill protection. UnrecoverableConversionException records are
-   * logged and skipped. Other errors propagate up for retry.
+   * Lazy initialization of ID field metadata using double-checked locking.
+   *
+   * @return IdFieldInfo containing field name and Paimon column index
+   * @throws Exception if index doesn't exist or doesn't have an ID field
    */
-  private void processRowSafely(
-      InternalRow row,
-      List<AddDocumentRequest> addDocumentRequests,
-      AtomicLong lastFlushTime,
-      long batchTimeoutMs,
-      int workerId,
-      int bucketId)
-      throws Exception {
-    // POISON PILL PROTECTION: Only catch specific conversion errors
-    AddDocumentRequest docRequest;
-    try {
-      docRequest = converter.convertRowToDocument(row);
-    } catch (UnrecoverableConversionException e) {
-      // POISON PILL: Log and skip bad record, continue processing
-      LOGGER.error(
-          "Poison pill detected - skipping bad record in bucket {}: {}", bucketId, e.getMessage());
-      // TODO: Send to dead letter queue
-      return; // Skip this record
-    }
+  private PaimonRowProcessor.IdFieldInfo ensureIdFieldInitialized() throws Exception {
+    // Double-checked locking for thread-safe lazy initialization
+    if (paimonIdFieldIndex < 0) {
+      synchronized (idFieldInitLock) {
+        if (paimonIdFieldIndex < 0) {
+          String indexName = paimonConfig.getTargetIndexName();
+          Optional<IdFieldDef> idFieldDefOpt = getIdFieldDef(indexName);
+          if (idFieldDefOpt.isEmpty()) {
+            throw new IllegalStateException(
+                "Index "
+                    + indexName
+                    + " must have an _id field defined which serves as primary key");
+          }
 
-    addDocumentRequests.add(docRequest);
+          IdFieldDef idFieldDef = idFieldDefOpt.get();
+          String fieldName = idFieldDef.getName();
+          int fieldIndex = table.rowType().getFieldIndex(fieldName);
 
-    // Time + size based batching
-    long currentTime = System.currentTimeMillis();
-    boolean sizeFull = addDocumentRequests.size() >= paimonConfig.getBatchSize();
-    boolean timeExpired = (currentTime - lastFlushTime.get()) >= batchTimeoutMs;
+          if (fieldIndex < 0) {
+            throw new IllegalStateException(
+                "ID field '" + fieldName + "' not found in Paimon table schema");
+          }
 
-    if (sizeFull || timeExpired) {
-      flushBatch(addDocumentRequests, lastFlushTime, currentTime, workerId, bucketId);
-    }
-  }
+          // Set fields atomically after validation (volatile write ensures visibility)
+          this.idFieldName = fieldName;
+          this.paimonIdFieldIndex = fieldIndex;
 
-  /** Flush batch with simple error handling. Unified method for both timed and final batches. */
-  private void flushBatch(
-      List<AddDocumentRequest> batch,
-      AtomicLong lastFlushTime,
-      long currentTime,
-      int workerId,
-      int bucketId)
-      throws Exception {
-    if (!batch.isEmpty()) {
-      processBatch(batch, workerId, bucketId);
-      batch.clear();
-      // Only update flush time if lastFlushTime is provided (not null for timed batches)
-      if (lastFlushTime != null) {
-        lastFlushTime.set(currentTime);
+          LOGGER.info(
+              "Initialized ID field '{}' at Paimon column index {} which serves as primary key",
+              idFieldName,
+              paimonIdFieldIndex);
+        }
       }
     }
+    return new PaimonRowProcessor.IdFieldInfo(idFieldName, paimonIdFieldIndex);
+  }
+
+  /** Override addDocuments to track statistics for monitoring. */
+  @Override
+  public long addDocuments(List<AddDocumentRequest> addDocRequests, String indexName)
+      throws Exception {
+    long startTime = System.currentTimeMillis();
+    long seqNum = super.addDocuments(addDocRequests, indexName);
+    long duration = System.currentTimeMillis() - startTime;
+
+    // Update statistics
+    totalDocumentsProcessed.addAndGet(addDocRequests.size());
+    totalBatchesProcessed.incrementAndGet();
+    totalProcessingTimeMs.addAndGet(duration);
+
+    LOGGER.info(
+        "Indexed {} docs in {}ms, seqNum: {}, throughput: {} docs/sec",
+        addDocRequests.size(),
+        duration,
+        seqNum,
+        String.format("%.1f", duration > 0 ? (addDocRequests.size() * 1000.0 / duration) : 0.0));
+
+    // Log periodic summary statistics (every 5 minutes)
+    long currentTime = System.currentTimeMillis();
+    if (currentTime - lastStatsLogTime > 300000) { // 5 minutes
+      logSummaryStatistics();
+      lastStatsLogTime = currentTime;
+    }
+
+    return seqNum;
   }
 
   /** Sleep with backoff for error recovery. */
@@ -584,39 +605,6 @@ public class PaimonIngestor extends AbstractIngestor {
       Thread.sleep(backoffMs);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    }
-  }
-
-  /** Process a batch of documents. */
-  protected void processBatch(List<AddDocumentRequest> batch, int workerId, int bucketId)
-      throws Exception {
-    String indexName = paimonConfig.getTargetIndexName();
-
-    long startTime = System.currentTimeMillis();
-    long seqNum = addDocuments(batch, indexName);
-    commit(indexName); // Commit after adding documents
-    long duration = System.currentTimeMillis() - startTime;
-
-    // Update statistics
-    totalDocumentsProcessed.addAndGet(batch.size());
-    totalBatchesProcessed.incrementAndGet();
-    totalProcessingTimeMs.addAndGet(duration);
-
-    // Promote to INFO for visibility - this is key progress information
-    LOGGER.info(
-        "Worker {} indexed {} docs from bucket {} in {}ms, seqNum: {}, throughput: {} docs/sec",
-        workerId,
-        batch.size(),
-        bucketId,
-        duration,
-        seqNum,
-        String.format("%.1f", duration > 0 ? (batch.size() * 1000.0 / duration) : 0.0));
-
-    // Log periodic summary statistics (every 5 minutes)
-    long currentTime = System.currentTimeMillis();
-    if (currentTime - lastStatsLogTime > 300000) { // 5 minutes
-      logSummaryStatistics();
-      lastStatsLogTime = currentTime;
     }
   }
 

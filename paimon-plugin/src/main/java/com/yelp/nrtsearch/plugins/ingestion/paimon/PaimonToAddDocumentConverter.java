@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory;
  * Converts Apache Paimon InternalRow records to nrtsearch AddDocumentRequest. Handles field mapping
  * and type conversion between Paimon and nrtsearch formats.
  */
-public class PaimonToAddDocumentConverter {
+public class PaimonToAddDocumentConverter implements PaimonRowProcessor.RowConverter {
   private static final Logger LOGGER = LoggerFactory.getLogger(PaimonToAddDocumentConverter.class);
 
   private final PaimonConfig paimonConfig;
@@ -56,6 +56,7 @@ public class PaimonToAddDocumentConverter {
   }
 
   /** Convert a Paimon InternalRow to nrtsearch AddDocumentRequest. */
+  @Override
   public AddDocumentRequest convertRowToDocument(InternalRow row)
       throws UnrecoverableConversionException {
     if (rowType == null) {

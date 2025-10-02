@@ -346,7 +346,7 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
     fieldDefBuilder.addField(
         Field.newBuilder()
             .setName("id")
-            .setType(FieldType.ATOM)
+            .setType(FieldType._ID)
             .setStoreDocValues(true)
             .setStore(true)
             .build());
@@ -454,8 +454,9 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
               SearchResponse response = getClient().getBlockingStub().search(searchRequest);
               LOGGER.info("Search returned {} hits", response.getTotalHits().getValue());
 
-              // Verify we got all 4 documents (user123, user456, user789, user999)
-              assertEquals(4, response.getTotalHits().getValue());
+              // Verify we got at least the 4 core documents (user123, user456, user789, user999)
+              // May have more if other tests like testDeleteSupport() have run
+              assertTrue("Expected at least 4 documents", response.getTotalHits().getValue() >= 4);
 
               // Verify document content
               Map<String, SearchResponse.Hit> hitsByKey = new HashMap<>();
@@ -639,6 +640,126 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
                   "user123 should have final rating", "6.0", getFieldValue(user123Doc, "rating"));
 
               LOGGER.info("Multi-snapshot ordering verified: document has latest version");
+            });
+  }
+
+  @Test
+  public void testDeleteSupport() throws Exception {
+    LOGGER.info("Testing DELETE support with INSERT→DELETE→INSERT sequence...");
+
+    // Setup index and schema first
+    setupIndexAndSchema();
+
+    // Write test data with explicit DELETE operation
+    Identifier identifier = Identifier.create(DATABASE_NAME, TABLE_NAME);
+    Table table = catalog.getTable(identifier);
+    BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
+
+    // Snapshot 1: Insert test_delete_user
+    BatchTableWrite write1 = writeBuilder.newWrite();
+    GenericRow insertV1 =
+        GenericRow.ofKind(
+            org.apache.paimon.types.RowKind.INSERT,
+            BinaryString.fromString("test_delete_user"),
+            BinaryString.fromString("First Version"),
+            BinaryString.fromString("This should be deleted"),
+            BinaryString.fromString("delete-test-v1"),
+            1.0,
+            new org.apache.paimon.data.GenericArray(
+                new BinaryString[] {BinaryString.fromString("delete-test")}),
+            BinaryString.fromString("Test Author"),
+            BinaryString.fromString("2024-01-01"));
+    write1.write(insertV1, 0);
+    List<CommitMessage> messages1 = write1.prepareCommit();
+    writeBuilder.newCommit().commit(messages1);
+    write1.close();
+    Thread.sleep(1000);
+
+    // Snapshot 2: Delete test_delete_user
+    BatchTableWrite write2 = writeBuilder.newWrite();
+    GenericRow delete =
+        GenericRow.ofKind(
+            org.apache.paimon.types.RowKind.DELETE,
+            BinaryString.fromString("test_delete_user"),
+            BinaryString.fromString("First Version"),
+            BinaryString.fromString("This should be deleted"),
+            BinaryString.fromString("delete-test-v1"),
+            1.0,
+            new org.apache.paimon.data.GenericArray(
+                new BinaryString[] {BinaryString.fromString("delete-test")}),
+            BinaryString.fromString("Test Author"),
+            BinaryString.fromString("2024-01-01"));
+    write2.write(delete, 0);
+    List<CommitMessage> messages2 = write2.prepareCommit();
+    writeBuilder.newCommit().commit(messages2);
+    write2.close();
+    Thread.sleep(1000);
+
+    // Snapshot 3: Insert test_delete_user again (different content)
+    BatchTableWrite write3 = writeBuilder.newWrite();
+    GenericRow insertV2 =
+        GenericRow.ofKind(
+            org.apache.paimon.types.RowKind.INSERT,
+            BinaryString.fromString("test_delete_user"),
+            BinaryString.fromString("Second Version"),
+            BinaryString.fromString("This is the final version"),
+            BinaryString.fromString("delete-test-final"),
+            2.0,
+            new org.apache.paimon.data.GenericArray(
+                new BinaryString[] {BinaryString.fromString("delete-test")}),
+            BinaryString.fromString("Test Author"),
+            BinaryString.fromString("2024-01-02"));
+    write3.write(insertV2, 0);
+    List<CommitMessage> messages3 = write3.prepareCommit();
+    writeBuilder.newCommit().commit(messages3);
+    write3.close();
+
+    LOGGER.info("Wrote 3 snapshots: INSERT → DELETE → INSERT for same key");
+
+    // Wait for all snapshots to be processed and verify final state
+    await()
+        .atMost(45, TimeUnit.SECONDS)
+        .pollInterval(Duration.ofSeconds(2))
+        .untilAsserted(
+            () -> {
+              SearchRequest searchRequest =
+                  SearchRequest.newBuilder()
+                      .setIndexName(INDEX_NAME)
+                      .setStartHit(0)
+                      .setTopHits(10)
+                      .setQuery(
+                          Query.newBuilder()
+                              .setTermQuery(
+                                  TermQuery.newBuilder()
+                                      .setField("category")
+                                      .setTextValue("delete-test-final")
+                                      .build())
+                              .build())
+                      .addRetrieveFields("id")
+                      .addRetrieveFields("title")
+                      .addRetrieveFields("content")
+                      .addRetrieveFields("category")
+                      .build();
+
+              SearchResponse response = getClient().getBlockingStub().search(searchRequest);
+
+              LOGGER.info("Found {} hits for test_delete_user", response.getTotalHits().getValue());
+
+              // Should find exactly 1 document (the final INSERT after DELETE)
+              assertEquals(
+                  "Should have exactly one document after INSERT→DELETE→INSERT",
+                  1,
+                  response.getTotalHits().getValue());
+
+              SearchResponse.Hit hit = response.getHits(0);
+              assertEquals("test_delete_user", getFieldValue(hit, "id"));
+              assertEquals(
+                  "Second Version",
+                  getFieldValue(hit, "title")); // This proves all 3 snapshots processed
+              assertEquals("This is the final version", getFieldValue(hit, "content"));
+              assertEquals("delete-test-final", getFieldValue(hit, "category"));
+
+              LOGGER.info("DELETE support verified: final document has correct content");
             });
   }
 

@@ -21,6 +21,7 @@ import static org.mockito.Mockito.*;
 import com.yelp.nrtsearch.plugins.ingestion.paimon.PaimonToAddDocumentConverter.UnrecoverableConversionException;
 import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -33,6 +34,7 @@ import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.StreamTableScan;
 import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.table.source.TableScan;
+import org.apache.paimon.types.RowKind;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -81,6 +83,19 @@ public class PaimonIngestorTest {
     ingestor.setStreamTableScan(mockStreamTableScan);
     ingestor.setConverter(mockConverter);
     ingestor.setWorkQueue(mockWorkQueue);
+
+    // Initialize ID field metadata using reflection (needed for PaimonRowProcessor)
+    try {
+      Field idFieldNameField = PaimonIngestor.class.getDeclaredField("idFieldName");
+      idFieldNameField.setAccessible(true);
+      idFieldNameField.set(ingestor, "photo_id");
+
+      Field paimonIdFieldIndexField = PaimonIngestor.class.getDeclaredField("paimonIdFieldIndex");
+      paimonIdFieldIndexField.setAccessible(true);
+      paimonIdFieldIndexField.set(ingestor, 0);
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to initialize ID field metadata", e);
+    }
   }
 
   // ============================================================================
@@ -107,17 +122,24 @@ public class PaimonIngestorTest {
         .when(mockRecordReader)
         .forEachRemaining(any());
 
-    // We spy on 'ingestor' to mock out the actual Lucene interaction
-    doNothing().when(ingestor).processBatch(any(), anyInt(), anyInt());
+    // Mock addDocuments and commit to avoid actual Lucene interaction
+    doReturn(1L).when(ingestor).addDocuments(any(), anyString());
+    doNothing().when(ingestor).commit(anyString());
+
+    // Mock RowKind for PaimonRowProcessor
+    when(mockRow.getRowKind()).thenReturn(RowKind.INSERT);
 
     // Set running to true so processing happens
     ingestor.getRunning().set(true);
+
+    when(mockConverter.convertRowToDocument(mockRow)).thenReturn(mock(AddDocumentRequest.class));
 
     // Act
     ingestor.processBucketWork(bucketWork, 1);
 
     // Assert
-    verify(ingestor, times(1)).processBatch(any(), eq(1), eq(1));
+    verify(ingestor, times(1)).addDocuments(any(), eq("test_index"));
+    verify(ingestor, times(1)).commit(eq("test_index"));
     verify(mockBatch, times(1)).markBucketComplete();
   }
 
@@ -142,6 +164,10 @@ public class PaimonIngestorTest {
         .when(mockRecordReader)
         .forEachRemaining(any());
 
+    // Mock RowKind for PaimonRowProcessor
+    when(badRow.getRowKind()).thenReturn(RowKind.INSERT);
+    when(goodRow.getRowKind()).thenReturn(RowKind.INSERT);
+
     when(mockConverter.convertRowToDocument(badRow))
         .thenThrow(
             new UnrecoverableConversionException(
@@ -154,10 +180,11 @@ public class PaimonIngestorTest {
             invocation -> {
               List<AddDocumentRequest> batch = invocation.getArgument(0);
               capturedDocuments.addAll(batch);
-              return null;
+              return 1L;
             })
         .when(ingestor)
-        .processBatch(any(), anyInt(), anyInt());
+        .addDocuments(any(), anyString());
+    doNothing().when(ingestor).commit(anyString());
 
     // Set running to true so processing happens
     ingestor.getRunning().set(true);
@@ -166,7 +193,7 @@ public class PaimonIngestorTest {
     ingestor.processBucketWork(bucketWork, 1);
 
     // Assert - Final batch is always processed even if not full
-    verify(ingestor, times(1)).processBatch(any(), anyInt(), anyInt());
+    verify(ingestor, times(1)).addDocuments(any(), eq("test_index"));
     assertEquals(
         "Should have processed exactly one document (poison pill skipped)",
         1,
@@ -193,6 +220,11 @@ public class PaimonIngestorTest {
         .when(mockRecordReader)
         .forEachRemaining(any());
 
+    // Mock RowKind for PaimonRowProcessor
+    when(mockRow.getRowKind()).thenReturn(RowKind.INSERT);
+
+    when(mockConverter.convertRowToDocument(mockRow)).thenReturn(mock(AddDocumentRequest.class));
+
     // Use a counter to control when to stop failing and shut down
     final int[] attemptCount = {0};
     doAnswer(
@@ -205,7 +237,7 @@ public class PaimonIngestorTest {
               throw new RuntimeException("DB is down!");
             })
         .when(ingestor)
-        .processBatch(any(), anyInt(), anyInt());
+        .addDocuments(any(), anyString());
 
     // Start the ingestor running
     ingestor.getRunning().set(true);
@@ -214,7 +246,7 @@ public class PaimonIngestorTest {
     ingestor.processBucketWork(bucketWork, 1);
 
     // Assert - Should have retried 3 times but never completed
-    verify(ingestor, times(3)).processBatch(any(), anyInt(), anyInt());
+    verify(ingestor, times(3)).addDocuments(any(), anyString());
     verify(mockBatch, never()).markBucketComplete(); // Never completes due to continuous failure
   }
 
@@ -295,11 +327,17 @@ public class PaimonIngestorTest {
         .when(mockRecordReader)
         .forEachRemaining(any());
 
+    // Mock RowKind for PaimonRowProcessor
+    when(mockRow.getRowKind()).thenReturn(RowKind.INSERT);
+
+    when(mockConverter.convertRowToDocument(mockRow)).thenReturn(mock(AddDocumentRequest.class));
+
     // Simulate a failure on the first attempt, then succeed on the second
     doThrow(new RuntimeException("Transient DB error!"))
-        .doNothing()
+        .doReturn(1L)
         .when(ingestor)
-        .processBatch(any(), anyInt(), anyInt());
+        .addDocuments(any(), anyString());
+    doNothing().when(ingestor).commit(anyString());
 
     // Set running to true so processing happens
     ingestor.getRunning().set(true);
@@ -309,15 +347,16 @@ public class PaimonIngestorTest {
 
     // Assert
     // Verify it was attempted twice (1 failure + 1 success)
-    verify(ingestor, times(2)).processBatch(any(), anyInt(), anyInt());
+    verify(ingestor, times(2)).addDocuments(any(), anyString());
     verify(mockBatch, times(1)).markBucketComplete();
   }
 
   @Test
-  public void testWorker_BatchingBySize() throws Exception {
-    // Arrange
-    final int BATCH_SIZE = 3;
-    when(mockPaimonConfig.getBatchSize()).thenReturn(BATCH_SIZE);
+  public void testWorker_BatchingBySizeNoLongerApplied() throws Exception {
+    // NOTE: This test previously verified batching by size within processBucketAtomically,
+    // but now batching is handled by PaimonRowProcessor which doesn't expose batch size config.
+    // PaimonRowProcessor batches consecutive operations and flushes on type transitions.
+    // This test now just verifies all rows are processed successfully.
 
     InFlightBatch mockBatch = mock(InFlightBatch.class);
     DataSplit mockSplit = mock(DataSplit.class);
@@ -341,6 +380,12 @@ public class PaimonIngestorTest {
         .when(mockRecordReader)
         .forEachRemaining(any());
 
+    // Mock RowKind for PaimonRowProcessor
+    when(row1.getRowKind()).thenReturn(RowKind.INSERT);
+    when(row2.getRowKind()).thenReturn(RowKind.INSERT);
+    when(row3.getRowKind()).thenReturn(RowKind.INSERT);
+    when(row4.getRowKind()).thenReturn(RowKind.INSERT);
+
     when(mockConverter.convertRowToDocument(any(InternalRow.class)))
         .thenReturn(mock(AddDocumentRequest.class));
 
@@ -350,10 +395,11 @@ public class PaimonIngestorTest {
             invocation -> {
               List<AddDocumentRequest> batch = invocation.getArgument(0);
               capturedBatches.add(new ArrayList<>(batch));
-              return null;
+              return 1L;
             })
         .when(ingestor)
-        .processBatch(any(), anyInt(), anyInt());
+        .addDocuments(any(), anyString());
+    doNothing().when(ingestor).commit(anyString());
 
     // Set running to true so processing happens
     ingestor.getRunning().set(true);
@@ -361,11 +407,10 @@ public class PaimonIngestorTest {
     // Act
     ingestor.processBucketWork(bucketWork, 1);
 
-    // Assert
-    verify(ingestor, times(2)).processBatch(any(), anyInt(), anyInt());
-    assertEquals("Should have processed two batches", 2, capturedBatches.size());
-    assertEquals("First batch should be full", BATCH_SIZE, capturedBatches.get(0).size());
-    assertEquals("Second batch should contain the remainder", 1, capturedBatches.get(1).size());
+    // Assert - PaimonRowProcessor flushes once at the end for all INSERTs
+    verify(ingestor, times(1)).addDocuments(any(), anyString());
+    assertEquals("Should have processed one batch", 1, capturedBatches.size());
+    assertEquals("Batch should contain all 4 rows", 4, capturedBatches.get(0).size());
     verify(mockBatch, times(1)).markBucketComplete();
   }
 
