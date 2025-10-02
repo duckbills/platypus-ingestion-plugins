@@ -83,11 +83,11 @@ public class ShardingFilterBuilder {
   public static Predicate buildPartitionFilter(Table table, int shardingMax, String serviceName) {
     int serviceNumber = extractServiceNumber(serviceName);
     Set<String> partitionKeys = new HashSet<>(table.partitionKeys());
-    if (partitionKeys.isEmpty() || !partitionKeys.contains("nrtsearch_partition")) {
+    if (partitionKeys.isEmpty() || !partitionKeys.contains("__internal_partition_id")) {
       throw new IllegalArgumentException(
-          "Table either has no partition keys or does not have nrtsearch_partition as one of partition keys, cannot apply ID sharding");
+          "Table either has no partition keys or does not have __internal_partition_id as one of partition keys, cannot apply ID sharding");
     }
-    int partitionFieldId = findFieldIndex(table.rowType(), "nrtsearch_partition");
+    int partitionFieldId = findFieldIndex(table.rowType(), "__internal_partition_id");
     return new PredicateBuilder(table.rowType()).equal(partitionFieldId, serviceNumber);
   }
 

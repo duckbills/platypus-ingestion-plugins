@@ -303,13 +303,13 @@ public class ModuloEqualTest {
     RowType rowType =
         RowType.builder()
             .field("id", DataTypes.INT())
-            .field("nrtsearch_partition", DataTypes.INT()) // partition field
+            .field("__internal_partition_id", DataTypes.INT()) // partition field
             .field("name", DataTypes.STRING())
             .build();
 
     FileStoreTable table =
         createUnawareBucketFileStoreTable(
-            rowType, options -> {}, List.of("nrtsearch_partition"), List.of("id"));
+            rowType, options -> {}, List.of("__internal_partition_id"), List.of("id"));
 
     StreamTableWrite write = table.newWrite(commitUser);
     StreamTableCommit commit = table.newCommit(commitUser);
