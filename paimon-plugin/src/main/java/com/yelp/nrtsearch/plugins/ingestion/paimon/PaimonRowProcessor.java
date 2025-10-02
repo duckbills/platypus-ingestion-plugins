@@ -44,16 +44,20 @@ import org.slf4j.LoggerFactory;
  */
 public class PaimonRowProcessor {
   private static final Logger logger = LoggerFactory.getLogger(PaimonRowProcessor.class);
+  private static final int DEFAULT_BATCH_SIZE = 1000;
+  private static final long BATCH_TIMEOUT_MS = 5000; // 5 seconds
 
   private final String indexName;
   private final IdFieldInitializer idFieldInitializer;
   private final RowConverter converter;
   private final Ingestor ingestor;
   private final RowType rowType;
+  private final int batchSize;
 
   private final List<AddDocumentRequest> addBatch = new ArrayList<>();
   private final List<Object> deleteBatch = new ArrayList<>();
   private OperationType lastOp = OperationType.NONE;
+  private long lastFlushTime = System.currentTimeMillis();
 
   enum OperationType {
     DELETE,
@@ -88,11 +92,22 @@ public class PaimonRowProcessor {
       RowConverter converter,
       Ingestor ingestor,
       RowType rowType) {
+    this(indexName, idFieldInitializer, converter, ingestor, rowType, DEFAULT_BATCH_SIZE);
+  }
+
+  public PaimonRowProcessor(
+      String indexName,
+      IdFieldInitializer idFieldInitializer,
+      RowConverter converter,
+      Ingestor ingestor,
+      RowType rowType,
+      int batchSize) {
     this.indexName = indexName;
     this.idFieldInitializer = idFieldInitializer;
     this.converter = converter;
     this.ingestor = ingestor;
     this.rowType = rowType;
+    this.batchSize = batchSize;
   }
 
   /**
@@ -159,6 +174,30 @@ public class PaimonRowProcessor {
       default:
         logger.warn("Unknown RowKind: {}, skipping row", kind);
     }
+
+    // Periodic flush based on size or time (check after processing each row)
+    if (shouldFlushBatch()) {
+      logger.debug("Periodic flush triggered - batch size/time threshold reached");
+      flush();
+    }
+  }
+
+  /**
+   * Check if the current active batch should be flushed based on size or time thresholds.
+   *
+   * @return true if batch should be flushed
+   */
+  private boolean shouldFlushBatch() {
+    int currentBatchSize = 0;
+    if (lastOp == OperationType.ADD) {
+      currentBatchSize = addBatch.size();
+    } else if (lastOp == OperationType.DELETE) {
+      currentBatchSize = deleteBatch.size();
+    }
+
+    boolean sizeFull = currentBatchSize >= batchSize;
+    boolean timeExpired = (System.currentTimeMillis() - lastFlushTime) >= BATCH_TIMEOUT_MS;
+    return sizeFull || timeExpired;
   }
 
   /**
@@ -208,6 +247,7 @@ public class PaimonRowProcessor {
     ingestor.commit(indexName);
     logger.debug("Successfully flushed {} deletes", deleteBatch.size());
     deleteBatch.clear();
+    lastFlushTime = System.currentTimeMillis(); // Reset timer after flush
   }
 
   private void flushAdds() throws Exception {
@@ -216,6 +256,7 @@ public class PaimonRowProcessor {
     ingestor.commit(indexName);
     logger.debug("Successfully flushed {} adds", addBatch.size());
     addBatch.clear();
+    lastFlushTime = System.currentTimeMillis(); // Reset timer after flush
   }
 
   private Object extractIdValue(InternalRow row, int fieldIndex) {

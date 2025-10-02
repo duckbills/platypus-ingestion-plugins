@@ -310,24 +310,39 @@ public class PaimonRowProcessorTest {
   @Test
   public void testLargeConsecutiveBatch() throws Exception {
     // Process a large number of consecutive inserts
+    // With batch size of 1000, should auto-flush after exactly 1000 rows
     for (long i = 0; i < 1000; i++) {
       processor.processRow(createRow(RowKind.INSERT, i));
     }
 
-    // Should not flush until explicit flush() call
-    assertEquals(0, testIngestor.getOperations().size());
+    // Should have auto-flushed once after hitting batch size of 1000
+    assertEquals(1, testIngestor.getOperations().size());
 
+    // Process a few more to verify batching continues
+    for (long i = 1000; i < 1010; i++) {
+      processor.processRow(createRow(RowKind.INSERT, i));
+    }
+
+    // Should still have just 1 operation (the 10 new ones are batched)
+    assertEquals(1, testIngestor.getOperations().size());
+
+    // Explicit flush for remaining
     processor.flush();
 
-    // Should batch all 1000 in a single operation
+    // Now should have 2 operations: first 1000, then remaining 10
     List<Operation> ops = testIngestor.getOperations();
-    assertEquals(1, ops.size());
+    assertEquals(2, ops.size());
     assertEquals(OperationType.ADD, ops.get(0).type);
     assertEquals(1000, ops.get(0).ids.size());
+    assertEquals(OperationType.ADD, ops.get(1).type);
+    assertEquals(10, ops.get(1).ids.size());
 
-    // Verify first and last IDs
+    // Verify first batch IDs
     assertEquals(Long.valueOf(0L), ops.get(0).ids.get(0));
     assertEquals(Long.valueOf(999L), ops.get(0).ids.get(999));
+    // Verify second batch IDs
+    assertEquals(Long.valueOf(1000L), ops.get(1).ids.get(0));
+    assertEquals(Long.valueOf(1009L), ops.get(1).ids.get(9));
   }
 
   @Test
