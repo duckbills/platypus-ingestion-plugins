@@ -89,8 +89,12 @@ ingestionPluginConfigs:
       - "__debug_"
       - "_temp_"
 
-    # ID-based sharding (optional) - for distributed processing
-    id_sharding_max: 30                            # Total number of shards
+    # Sharding configuration (optional) - for distributed processing
+    sharding:
+      strategy: "modulo"                           # Sharding strategy: none, modulo, geo
+      modulo:
+        max_shards: 30                             # Total number of shards
+        partition_field: "__internal_partition_id" # Partition field name in Paimon table
 ```
 
 ### S3A Configuration Details
@@ -143,45 +147,179 @@ ingestionPluginConfigs:
 
 **Processing Order**: Fields are first checked for dropping, then remaining fields are mapped if configured, otherwise kept with original names.
 
-## ID-Based Sharding
+## Sharding for Distributed Processing
 
-For distributed processing across multiple nrtsearch instances, the plugin supports ID-based sharding using modulo arithmetic.
+The plugin supports multiple sharding strategies to enable horizontal scaling across multiple nrtsearch service instances. Sharding divides data processing workload for improved throughput and fault tolerance.
 
-### Configuration
+### Strategy: None (Default)
 
+Process all data without sharding.
+
+**Use when:**
+- Single instance deployment
+- Small datasets
+- Development/testing
+
+**Configuration:**
 ```yaml
-ingestionPluginConfigs:
-  paimon:
-    id_sharding_max: 30                 # Total number of shards (required)
-    # Service name must end with shard number: "nrtsearch-service-23"
+# Option 1: Explicit none strategy
+sharding:
+  strategy: "none"
+
+# Option 2: Omit sharding config entirely (default behavior)
 ```
 
-### Service Name Requirements
+### Strategy: Modulo (Partition-Level File Pruning) ⭐ Recommended
 
-The plugin extracts the shard number from the service name:
-- **Format**: Service name must end with `-{number}` (e.g., `nrtsearch-paimon-service-23`)
-- **Shard Assignment**: Service processes records where `primary_key % id_sharding_max == service_number`
-- **Example**: With `id_sharding_max: 30` and service `nrtsearch-service-23`, processes records where `photo_id % 30 == 23`
+Distributed processing using partition-level file skipping for maximum I/O efficiency.
 
-### How It Works
+**Benefits:**
+- **~N× I/O reduction** (N = number of shards) - each instance reads only 1/N of files from S3
+- **File-level skipping** - Paimon skips entire segments at manifest level before reading data
+- **No row-level filtering overhead** - data pre-filtered at partition boundary
+- **Optimal S3 costs** - dramatically reduces S3 API calls and data transfer
 
-1. **Primary Key Detection**: Uses the first primary key from the Paimon table schema as the sharding field
-2. **Modulo Filter**: Creates a predicate filter: `primary_key % id_sharding_max == service_number`
-3. **Distributed Processing**: Each service instance processes only its assigned shard of data
-4. **Fault Tolerance**: Service name parsing errors cause immediate startup failure for safety
+**Requirements:**
+1. **Partitioned Paimon table**: Table MUST use `PARTITIONED BY (partition_field)`
+2. **Upstream calculation**: Partition field MUST contain `primary_key % max_shards`
+3. **Service name format**: Must end with shard number (0 to max_shards-1)
+4. **Drop partition field**: Use `field.drop.prefixes` to exclude partition field from nrtsearch index (it's only needed for file filtering)
 
-### Example Setup
-
+**Configuration:**
 ```yaml
-# Service: nrtsearch-photos-7
+serviceName: "nrtsearch-photos-23"  # Service name must end with shard number
+
 ingestionPluginConfigs:
   paimon:
-    database.name: "photos_db"
-    table.name: "photos"                # Table with primary key 'photo_id'
+    database.name: "production"
+    table.name: "photos"
     target.index.name: "photos-index"
-    id_sharding_max: 10                 # Total of 10 services (0-9)
-    # This service processes: photo_id % 10 == 7
+    warehouse.path: "s3a://prod-data-lake/warehouse/"
+
+    # Drop internal partition field - not needed in nrtsearch index
+    field.drop.prefixes:
+      - "__internal_"                              # Drops __internal_partition_id
+
+    sharding:
+      strategy: "modulo"
+      modulo:
+        max_shards: 30                             # Total number of shards
+        partition_field: "__internal_partition_id" # Partition field name in Paimon table
 ```
+
+**Upstream Flink Configuration:**
+
+Your Flink job must create a partitioned table with the partition field calculated correctly:
+
+```sql
+-- Create partitioned Paimon table
+CREATE TABLE photos_partitioned (
+    photo_id BIGINT NOT NULL,
+    title STRING,
+    description STRING,
+    __internal_partition_id INT NOT NULL,       -- Partition field
+    PRIMARY KEY (photo_id) NOT ENFORCED
+) PARTITIONED BY (__internal_partition_id);     -- Partition by modulo result
+
+-- Insert data with partition calculation
+INSERT INTO photos_partitioned
+SELECT
+    photo_id,
+    title,
+    description,
+    photo_id % 30 AS __internal_partition_id    -- Calculate partition using modulo
+FROM source_photos;
+```
+
+**Service Name Requirements:**
+
+Service name must end with a number in range `[0, max_shards)`:
+- ✅ `nrtsearch-photos-0` → shard 0
+- ✅ `prod-service-15` → shard 15
+- ✅ `my_service_29` → shard 29
+- ❌ `nrtsearch-photos` → ERROR: no shard number
+- ❌ `service-30` → ERROR: out of range for max_shards=30
+
+**How It Works:**
+
+Partition-level file pruning works by filtering at the **metadata level** before reading any data files from S3.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Paimon Manifest File (metadata - SMALL, always read)       │
+├─────────────────────────────────────────────────────────────┤
+│ Segment 1: file=data-001.parquet, partition=0, bucket=0    │
+│ Segment 2: file=data-002.parquet, partition=1, bucket=1    │
+│ Segment 3: file=data-003.parquet, partition=2, bucket=1 ✅ │
+│ Segment 4: file=data-004.parquet, partition=2, bucket=0 ✅ │
+│ Segment 5: file=data-005.parquet, partition=3, bucket=0    │
+│ ...                                                         │
+│ Segment 30: file=data-030.parquet, partition=29, bucket=2  │
+└─────────────────────────────────────────────────────────────┘
+                        ↓
+            partitionFilter.test(partition == 2)
+                        ↓
+        ┌───────────────┴──────────────────┐
+        ↓                                  ↓
+    TRUE (✅)                          FALSE (❌)
+    Read these files:                  SKIP - Don't read from S3:
+    - data-003.parquet                 - data-001.parquet
+    - data-004.parquet                 - data-002.parquet
+                                       - data-005.parquet
+                                       - ... (28 files skipped)
+```
+
+**Step-by-Step Process:**
+
+1. **Service Name → Shard ID**: Extract shard number from service name (e.g., `nrtsearch-photos-2` → shard 2)
+2. **Create Partition Filter**: `Map.of("__internal_partition_id", "2")` → filter predicate
+3. **Read Manifest Metadata**: Paimon reads small manifest file containing file→partition mappings
+4. **Filter at Metadata Level**: For each file entry, test `partition == 2` against metadata
+5. **Skip Non-Matching Files**: Files with partition ≠ 2 are **never read from S3**
+6. **Read Only Matching Files**: Only files with partition = 2 are fetched and processed
+
+**Why This is Efficient:**
+
+| Approach | Reads Manifest | Reads Data Files | S3 API Calls | Data Transfer |
+|----------|----------------|------------------|--------------|---------------|
+| **No Sharding** | Yes (1 read) | All files (30) | High | 100% |
+| **Row-Level Filtering** | Yes (1 read) | All files (30) | High | 100% then filter |
+| **Partition-Level Filtering** | Yes (1 read) | Matching files (1) | Low (~3%) | ~3.3% |
+
+**Key Insight**: Partition information is **pre-computed metadata** stored in the manifest. The filter decision happens in memory before any data file I/O, enabling true file-level skipping.
+
+**Validation:**
+
+The plugin validates configuration at startup:
+- ✅ Verifies table is partitioned
+- ✅ Checks partition field exists in table schema
+- ✅ Validates service name ends with valid shard number
+- ❌ Fails fast with clear error messages if misconfigured
+
+Example error:
+```
+IllegalArgumentException: Service name 'nrtsearch-photos' must end with shard number (0-29).
+Examples: 'nrtsearch-service-0', 'my_service_5'
+```
+
+### Strategy: Geo (Future)
+
+Geographic sharding based on region or data center. Not yet implemented.
+
+```yaml
+sharding:
+  strategy: "geo"
+  # Configuration TBD
+```
+
+### Sharding Strategy Comparison
+
+| Strategy | I/O Reduction | Table Requirements | Service Name Format | Use Case |
+|----------|---------------|-------------------|---------------------|----------|
+| **none** | None | Any table | Any name | Single instance, dev/test |
+| **modulo** | ~N× (N=shards) | `PARTITIONED BY (field)` | Must end with number (0 to N-1) | Production, distributed processing |
+| **geo** | Varies | TBD | TBD | Multi-region deployments |
 
 ## Dependency Packaging
 

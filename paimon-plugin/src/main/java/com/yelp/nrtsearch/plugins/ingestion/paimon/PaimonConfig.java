@@ -54,8 +54,8 @@ public class PaimonConfig {
   // Field drop configuration
   private final List<String> fieldDropPrefixes;
 
-  // ID sharding configuration
-  private final Integer idShardingMax;
+  // Sharding configuration
+  private final Map<String, Object> shardingConfig;
 
   public PaimonConfig(Map<String, Object> config) {
     // Required configuration
@@ -82,8 +82,10 @@ public class PaimonConfig {
     List<String> fieldDropPrefixesRaw = (List<String>) config.get("field.drop.prefixes");
     this.fieldDropPrefixes = fieldDropPrefixesRaw;
 
-    // ID sharding (optional)
-    this.idShardingMax = getOptionalInteger(config, "id_sharding_max");
+    // Sharding configuration (optional)
+    @SuppressWarnings("unchecked")
+    Map<String, Object> shardingConfigRaw = (Map<String, Object>) config.get("sharding");
+    this.shardingConfig = shardingConfigRaw;
 
     LOGGER.info(
         "Initialized PaimonConfig: database={}, table={}, tablePath={}, targetIndex={}, workerThreads={}, batchSize={}",
@@ -200,7 +202,7 @@ public class PaimonConfig {
     return fieldDropPrefixes;
   }
 
-  public Integer getIdShardingMax() {
-    return idShardingMax;
+  public Map<String, Object> getShardingConfig() {
+    return shardingConfig;
   }
 }

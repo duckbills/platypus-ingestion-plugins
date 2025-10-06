@@ -15,6 +15,8 @@
  */
 package com.yelp.nrtsearch.plugins.ingestion.paimon;
 
+import com.yelp.nrtsearch.plugins.ingestion.paimon.sharding.ShardingStrategy;
+import com.yelp.nrtsearch.plugins.ingestion.paimon.sharding.ShardingStrategyFactory;
 import com.yelp.nrtsearch.server.config.NrtsearchConfig;
 import com.yelp.nrtsearch.server.field.IdFieldDef;
 import com.yelp.nrtsearch.server.grpc.AddDocumentRequest;
@@ -38,7 +40,6 @@ import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.options.Options;
-import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
@@ -226,38 +227,21 @@ public class PaimonIngestor extends AbstractIngestor {
     this.table = ((FileStoreTable) baseTable).copy(consumerOptions);
     // Initialize converter with table schema
     converter.setRowType(table.rowType());
-    // Create table read and stream scan
+
+    // Create and apply sharding strategy
+    ShardingStrategy shardingStrategy =
+        ShardingStrategyFactory.create(paimonConfig.getShardingConfig());
+    shardingStrategy.validateTable(table);
+    LOGGER.info("Sharding strategy: {}", shardingStrategy.getDescription());
+
+    // Apply sharding to read builder
     ReadBuilder readBuilder = table.newReadBuilder();
+    readBuilder =
+        shardingStrategy.applySharding(readBuilder, table, nrtSearchConfig.getServiceName());
 
-    // Apply ID sharding filter if configured
-    Integer idShardingMax = paimonConfig.getIdShardingMax();
-    if (idShardingMax != null) {
-      String serviceName = nrtSearchConfig.getServiceName();
-
-      LOGGER.info("=== ID SHARDING FILTER CONFIGURATION ===");
-      LOGGER.info("ID sharding enabled - max: {}, service: {}", idShardingMax, serviceName);
-      LOGGER.info("Table primary keys: {}", table.primaryKeys());
-      LOGGER.info("Table schema: {}", table.rowType());
-
-      Predicate shardingFilter =
-          ShardingFilterBuilder.buildShardingFilter(table, idShardingMax, serviceName);
-
-      LOGGER.info("Created sharding filter predicate: {}", shardingFilter);
-      LOGGER.info("Predicate class: {}", shardingFilter.getClass().getSimpleName());
-
-      readBuilder = readBuilder.withFilter(shardingFilter);
-      LOGGER.info("Applied sharding filter to ReadBuilder");
-      LOGGER.info("=== ID SHARDING FILTER APPLIED ===");
-    } else {
-      LOGGER.info("ID sharding not configured - processing all records");
-    }
-
+    // Create table read and stream scan
     this.streamTableScan = readBuilder.newStreamScan();
     this.tableRead = readBuilder.newRead();
-    if (idShardingMax != null) {
-      this.tableRead = this.tableRead.executeFilter();
-      LOGGER.info("Enabled row-level filtering via executeFilter() for ModuloEqual predicate");
-    }
 
     LOGGER.info("Successfully initialized Paimon table: {}", paimonConfig.getTablePath());
   }

@@ -112,4 +112,63 @@ public class PaimonConfigTest {
 
     new PaimonConfig(config);
   }
+
+  @Test
+  public void testShardingConfigNone() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("target.index.name", "test_index");
+    config.put("warehouse.path", "/tmp/paimon");
+
+    Map<String, Object> shardingConfig = new HashMap<>();
+    shardingConfig.put("strategy", "none");
+    config.put("sharding", shardingConfig);
+
+    PaimonConfig paimonConfig = new PaimonConfig(config);
+
+    assertEquals(shardingConfig, paimonConfig.getShardingConfig());
+  }
+
+  @Test
+  public void testShardingConfigModulo() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("target.index.name", "test_index");
+    config.put("warehouse.path", "/tmp/paimon");
+
+    Map<String, Object> moduloConfig = new HashMap<>();
+    moduloConfig.put("max_shards", 30);
+    moduloConfig.put("partition_field", "__internal_partition_id");
+
+    Map<String, Object> shardingConfig = new HashMap<>();
+    shardingConfig.put("strategy", "modulo");
+    shardingConfig.put("modulo", moduloConfig);
+    config.put("sharding", shardingConfig);
+
+    PaimonConfig paimonConfig = new PaimonConfig(config);
+
+    assertEquals(shardingConfig, paimonConfig.getShardingConfig());
+    assertEquals("modulo", paimonConfig.getShardingConfig().get("strategy"));
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> retrievedModuloConfig =
+        (Map<String, Object>) paimonConfig.getShardingConfig().get("modulo");
+    assertEquals(30, retrievedModuloConfig.get("max_shards"));
+    assertEquals("__internal_partition_id", retrievedModuloConfig.get("partition_field"));
+  }
+
+  @Test
+  public void testNoShardingConfig() {
+    Map<String, Object> config = new HashMap<>();
+    config.put("database.name", "test_db");
+    config.put("table.name", "test_table");
+    config.put("target.index.name", "test_index");
+    config.put("warehouse.path", "/tmp/paimon");
+
+    PaimonConfig paimonConfig = new PaimonConfig(config);
+
+    assertNull(paimonConfig.getShardingConfig());
+  }
 }
