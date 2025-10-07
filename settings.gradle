@@ -22,5 +22,8 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "nrtsearch-ingestion-plugins"
-include("kafka-plugin")
-include("paimon-plugin")
+include("nrtsearch-plugin-kafka")
+include("nrtsearch-plugin-paimon")
+
+project(":nrtsearch-plugin-kafka").projectDir = file("kafka-plugin")
+project(":nrtsearch-plugin-paimon").projectDir = file("paimon-plugin")
