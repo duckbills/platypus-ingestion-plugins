@@ -6,8 +6,8 @@ endif
 
 PROJECT_NAME := nrtsearch-ingestion-plugins
 ARTIFACT_VERSION := $(shell grep "version = " build.gradle | cut -d"'" -f2)
-KAFKA_ARTIFACT_FILE_PATH := kafka-plugin/build/distributions/kafka-plugin-$(ARTIFACT_VERSION).zip
-PAIMON_ARTIFACT_FILE_PATH := paimon-plugin/build/distributions/paimon-plugin-$(ARTIFACT_VERSION).zip
+KAFKA_ARTIFACT_FILE_PATH := kafka-plugin/build/distributions/nrtsearch-plugin-kafka-$(ARTIFACT_VERSION).zip
+PAIMON_ARTIFACT_FILE_PATH := paimon-plugin/build/distributions/nrtsearch-plugin-paimon-$(ARTIFACT_VERSION).zip
 
 # AWS variables (loaded from .env)
 # AWS_ROLE := (from .env)
@@ -70,15 +70,15 @@ publish: dist
 		exit 1; \
 	fi
 
-	@echo "Uploading to dev..."
-	aws s3 cp $(KAFKA_ARTIFACT_FILE_PATH) $(S3_DEV_BUCKET) || exit $$?
-	aws s3 cp $(PAIMON_ARTIFACT_FILE_PATH) $(S3_DEV_BUCKET) || exit $$?
+	#@echo "Uploading to dev..."
+	#aws s3 cp $(KAFKA_ARTIFACT_FILE_PATH) $(S3_DEV_BUCKET) || exit $$?
+	#aws s3 cp $(PAIMON_ARTIFACT_FILE_PATH) $(S3_DEV_BUCKET) || exit $$?
 
-	@echo "Assuming role for prod upload..."
-	sts_json=$$(aws sts assume-role --role-arn $(AWS_ROLE) --role-session-name nrtsearch-ingestion-plugins-deploy | jq .Credentials)
-	export AWS_ACCESS_KEY_ID=$$(echo "$$sts_json" | jq -r .AccessKeyId)
-	export AWS_SECRET_ACCESS_KEY=$$(echo "$$sts_json" | jq -r .SecretAccessKey)
-	export AWS_SESSION_TOKEN=$$(echo "$$sts_json" | jq -r .SessionToken)
+	#@echo "Assuming role for prod upload..."
+	#sts_json=$$(aws sts assume-role --role-arn $(AWS_ROLE) --role-session-name nrtsearch-ingestion-plugins-deploy | jq .Credentials)
+	#export AWS_ACCESS_KEY_ID=$$(echo "$$sts_json" | jq -r .AccessKeyId)
+	#export AWS_SECRET_ACCESS_KEY=$$(echo "$$sts_json" | jq -r .SecretAccessKey)
+	#export AWS_SESSION_TOKEN=$$(echo "$$sts_json" | jq -r .SessionToken)
 
 	@echo "Uploading to prod buckets..."
 	aws s3 cp $(KAFKA_ARTIFACT_FILE_PATH) $(S3_PNW_BUCKET) || exit $$?
