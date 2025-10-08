@@ -15,6 +15,8 @@
  */
 package com.yelp.nrtsearch.plugins.ingestion.paimon;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -26,11 +28,20 @@ public class InFlightBatch {
   private final long paimonCheckpointId;
   private final CountDownLatch latch;
   private final int expectedCompletions;
+  private final Set<Integer> pendingBuckets; // Track which buckets haven't completed
+  private final Set<Integer> completedBuckets; // Track which buckets have completed
 
   public InFlightBatch(long paimonCheckpointId, int expectedCompletions) {
     this.paimonCheckpointId = paimonCheckpointId;
     this.expectedCompletions = expectedCompletions;
     this.latch = new CountDownLatch(expectedCompletions);
+    this.pendingBuckets = ConcurrentHashMap.newKeySet();
+    this.completedBuckets = ConcurrentHashMap.newKeySet();
+  }
+
+  /** Register a bucket as part of this batch (called by coordinator during dispatch). */
+  public void registerBucket(int bucketId) {
+    pendingBuckets.add(bucketId);
   }
 
   public long getPaimonCheckpointId() {
@@ -66,8 +77,29 @@ public class InFlightBatch {
    * Signal that one bucket has completed processing successfully. Called by worker threads after
    * successful commit.
    */
-  public void markBucketComplete() {
-    this.latch.countDown();
+  public void markBucketComplete(int bucketId) {
+    if (pendingBuckets.remove(bucketId)) {
+      completedBuckets.add(bucketId);
+      this.latch.countDown();
+    }
+  }
+
+  /**
+   * Get diagnostic information about which buckets are still pending.
+   *
+   * @return Set of bucket IDs that haven't completed yet
+   */
+  public Set<Integer> getPendingBuckets() {
+    return Set.copyOf(pendingBuckets);
+  }
+
+  /**
+   * Get diagnostic information about which buckets have completed.
+   *
+   * @return Set of bucket IDs that have completed
+   */
+  public Set<Integer> getCompletedBuckets() {
+    return Set.copyOf(completedBuckets);
   }
 
   /**

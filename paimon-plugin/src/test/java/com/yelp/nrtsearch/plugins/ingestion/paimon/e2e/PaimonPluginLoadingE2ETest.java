@@ -45,7 +45,8 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
   protected List<String> getPlugins() {
     // Upload ZIP to S3Mock and return S3 path - let NRTSearch handle download/extraction
     setupPluginInS3();
-    return List.of("s3://" + getS3BucketName() + "/plugins/paimon-plugin-0.1.0-SNAPSHOT.zip");
+    return List.of(
+        "s3://" + getS3BucketName() + "/plugins/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.zip");
   }
 
   @Override
@@ -77,7 +78,8 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
 
       // Find the plugin distribution ZIP file
       String projectRoot = System.getProperty("user.dir");
-      String pluginZipPath = projectRoot + "/build/distributions/paimon-plugin-0.1.0-SNAPSHOT.zip";
+      String pluginZipPath =
+          projectRoot + "/build/distributions/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.zip";
 
       LOGGER.info("Looking for plugin distribution at: {}", pluginZipPath);
 
@@ -89,7 +91,7 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
 
       // Upload ZIP to S3Mock - NRTSearch will download and extract it automatically
       java.io.File zipFile = new java.io.File(pluginZipPath);
-      String s3Key = "plugins/paimon-plugin-0.1.0-SNAPSHOT.zip";
+      String s3Key = "plugins/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.zip";
 
       LOGGER.info("Uploading plugin ZIP ({} bytes) to S3Mock at key: {}", zipFile.length(), s3Key);
 
@@ -104,7 +106,7 @@ public class PaimonPluginLoadingE2ETest extends NrtsearchTest {
   }
 
   private void buildPluginDistribution(String projectRoot) throws Exception {
-    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":paimon-plugin:distZip");
+    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":nrtsearch-plugin-paimon:distZip");
     pb.directory(
         new java.io.File(projectRoot).getParentFile()); // Go up to nrtsearch-ingestion-plugins
     pb.inheritIO(); // Show build output

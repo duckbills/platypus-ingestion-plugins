@@ -140,7 +140,7 @@ public class PaimonIngestorTest {
     // Assert
     verify(ingestor, times(1)).addDocuments(any(), eq("test_index"));
     verify(ingestor, times(1)).commit(eq("test_index"));
-    verify(mockBatch, times(1)).markBucketComplete();
+    verify(mockBatch, times(1)).markBucketComplete(anyInt());
   }
 
   @Test
@@ -198,7 +198,7 @@ public class PaimonIngestorTest {
         "Should have processed exactly one document (poison pill skipped)",
         1,
         capturedDocuments.size());
-    verify(mockBatch, times(1)).markBucketComplete();
+    verify(mockBatch, times(1)).markBucketComplete(anyInt());
   }
 
   @Test
@@ -247,7 +247,8 @@ public class PaimonIngestorTest {
 
     // Assert - Should have retried 3 times but never completed
     verify(ingestor, times(3)).addDocuments(any(), anyString());
-    verify(mockBatch, never()).markBucketComplete(); // Never completes due to continuous failure
+    verify(mockBatch, never())
+        .markBucketComplete(anyInt()); // Never completes due to continuous failure
   }
 
   // ============================================================================
@@ -272,7 +273,7 @@ public class PaimonIngestorTest {
     doAnswer(
             invocation -> {
               PaimonIngestor.BucketWork work = invocation.getArgument(0);
-              work.getBatch().markBucketComplete(); // Unblock awaitCompletion()
+              work.getBatch().markBucketComplete(work.getBucketId()); // Unblock awaitCompletion()
               ingestor.getRunning().set(false); // Stop the loop after one iteration
               return true; // Indicate success for queue.offer()
             })
@@ -348,7 +349,7 @@ public class PaimonIngestorTest {
     // Assert
     // Verify it was attempted twice (1 failure + 1 success)
     verify(ingestor, times(2)).addDocuments(any(), anyString());
-    verify(mockBatch, times(1)).markBucketComplete();
+    verify(mockBatch, times(1)).markBucketComplete(anyInt());
   }
 
   @Test
@@ -411,7 +412,7 @@ public class PaimonIngestorTest {
     verify(ingestor, times(1)).addDocuments(any(), anyString());
     assertEquals("Should have processed one batch", 1, capturedBatches.size());
     assertEquals("Batch should contain all 4 rows", 4, capturedBatches.get(0).size());
-    verify(mockBatch, times(1)).markBucketComplete();
+    verify(mockBatch, times(1)).markBucketComplete(anyInt());
   }
 
   @Test

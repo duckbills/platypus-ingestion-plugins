@@ -47,7 +47,8 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
   static final String INDEX_NAME = "test-index";
   static final String S3_BUCKET_NAME = "test-bucket";
 
-  private static final String PLUGIN_S3_KEY = "nrtsearch/plugins/paimon-plugin-0.1.0-SNAPSHOT.zip";
+  private static final String PLUGIN_S3_KEY =
+      "nrtsearch/plugins/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.zip";
   private static TemporaryFolder tempWarehouse;
   private static String warehousePath;
   private static Catalog catalog;
@@ -63,7 +64,8 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
 
     // Upload the plugin zip to S3
     String projectRoot = System.getProperty("user.dir");
-    String pluginZipPath = projectRoot + "/build/distributions/paimon-plugin-0.1.0-SNAPSHOT.zip";
+    String pluginZipPath =
+        projectRoot + "/build/distributions/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.zip";
 
     getS3Client().putObject(getS3BucketName(), PLUGIN_S3_KEY, new java.io.File(pluginZipPath));
   }
@@ -76,7 +78,7 @@ public class PaimonIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsear
 
   private static void buildPluginDistribution() throws Exception {
     String projectRoot = System.getProperty("user.dir");
-    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":paimon-plugin:distZip");
+    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":nrtsearch-plugin-paimon:distZip");
     pb.directory(
         new java.io.File(projectRoot).getParentFile()); // Go up to nrtsearch-ingestion-plugins
     pb.inheritIO(); // Show build output

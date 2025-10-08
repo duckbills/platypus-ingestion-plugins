@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -271,8 +272,10 @@ public class PaimonIngestor extends AbstractIngestor {
           // PHASE 2: DISPATCH WORK - Add all work to queue with batch reference
           long totalSplitSize = 0;
           for (Map.Entry<Integer, List<Split>> entry : splitsByBucket.entrySet()) {
+            int bucketId = entry.getKey();
+            batch.registerBucket(bucketId); // Track this bucket for diagnostics
             List<Split> sortedSplits = sortSplitsBySequence(entry.getValue());
-            BucketWork bucketWork = new BucketWork(entry.getKey(), sortedSplits, batch);
+            BucketWork bucketWork = new BucketWork(bucketId, sortedSplits, batch);
 
             // Calculate split sizes for logging
             long bucketSplitSize = 0;
@@ -286,10 +289,10 @@ public class PaimonIngestor extends AbstractIngestor {
             totalSplitSize += bucketSplitSize;
 
             LOGGER.debug(
-                "Bucket {} has {} splits, total size: {:.2f} MB",
+                "Bucket {} has {} splits, total size: {} MB",
                 entry.getKey(),
                 sortedSplits.size(),
-                bucketSplitSize / (1024.0 * 1024.0));
+                String.format("%.2f", bucketSplitSize / (1024.0 * 1024.0)));
 
             // Block with timeout and continuous logging (prevents data loss)
             boolean queued = false;
@@ -311,16 +314,64 @@ public class PaimonIngestor extends AbstractIngestor {
           }
 
           LOGGER.info(
-              "Coordinator dispatched {} buckets ({} total splits, {:.2f} MB data) for checkpoint {}. Awaiting completion...",
+              "Coordinator dispatched {} buckets ({} total splits, {} MB data) for checkpoint {}. Awaiting completion...",
               splitsByBucket.size(),
               incrementalSplits.size(),
-              totalSplitSize / (1024.0 * 1024.0),
+              String.format("%.2f", totalSplitSize / (1024.0 * 1024.0)),
               nextSnapshot);
 
-          // PHASE 3: AWAIT COMPLETION - Critical synchronization point
-
+          // PHASE 3: AWAIT COMPLETION - Critical synchronization point with periodic timeout checks
+          // Periodically checks progress and logs diagnostics if checkpoint takes too long
           long batchStartTime = System.currentTimeMillis();
-          batch.awaitCompletion();
+          long timeoutMinutes = paimonConfig.getCheckpointTimeoutMinutes();
+          boolean completed = false;
+          int progressCheckCount = 0;
+
+          while (!completed && running.get()) {
+            completed = batch.awaitCompletion(timeoutMinutes, TimeUnit.MINUTES);
+
+            if (!completed) {
+              // TIMEOUT: Log detailed diagnostics about stuck checkpoint and continue waiting
+              progressCheckCount++;
+              long elapsedMinutes = (System.currentTimeMillis() - batchStartTime) / 60000;
+              Set<Integer> pendingBuckets = batch.getPendingBuckets();
+              Set<Integer> completedBuckets = batch.getCompletedBuckets();
+              long remainingCount = batch.getRemainingCount();
+
+              LOGGER.warn(
+                  "CHECKPOINT PROGRESS CHECK #{}: Checkpoint {} is still in progress after {} minutes total elapsed time. "
+                      + "Progress: {}/{} buckets completed. "
+                      + "Pending bucket IDs: {} "
+                      + "Completed bucket IDs: {} "
+                      + "Remaining latch count: {}. "
+                      + "Work queue size: {}, capacity: {}, remaining: {}. "
+                      + "Will wait another {} minutes then check again. "
+                      + "ACTION: Check worker thread logs for pending buckets to diagnose what is blocking them.",
+                  progressCheckCount,
+                  nextSnapshot,
+                  elapsedMinutes,
+                  completedBuckets.size(),
+                  splitsByBucket.size(),
+                  pendingBuckets,
+                  completedBuckets,
+                  remainingCount,
+                  workQueue.size(),
+                  paimonConfig.getQueueCapacity(),
+                  workQueue.remainingCapacity(),
+                  timeoutMinutes);
+
+              // Continue waiting - will retry indefinitely until success or shutdown
+            }
+          }
+
+          if (!completed) {
+            // Only happens if running.get() == false (shutdown requested during wait)
+            LOGGER.warn(
+                "Coordinator shutting down while checkpoint {} was in progress. Checkpoint will NOT be committed.",
+                nextSnapshot);
+            break; // Exit coordinator loop
+          }
+
           long batchDuration = System.currentTimeMillis() - batchStartTime;
 
           LOGGER.info(
@@ -370,6 +421,12 @@ public class PaimonIngestor extends AbstractIngestor {
         BucketWork bucketWork =
             workQueue.poll(paimonConfig.getPollTimeoutMs(), TimeUnit.MILLISECONDS);
         if (bucketWork != null) {
+          LOGGER.info(
+              "Worker {} picked up bucket {} (checkpoint {}) with {} splits from queue",
+              workerId,
+              bucketWork.getBucketId(),
+              bucketWork.getBatch().getPaimonCheckpointId(),
+              bucketWork.getSplits().size());
           processBucketWork(bucketWork, workerId); // Never throws - handles all retries internally
         }
       } catch (InterruptedException e) {
@@ -395,7 +452,7 @@ public class PaimonIngestor extends AbstractIngestor {
         processBucketAtomically(bucketWork, workerId, attempt);
 
         // SUCCESS: Signal completion and exit
-        bucketWork.getBatch().markBucketComplete();
+        bucketWork.getBatch().markBucketComplete(bucketWork.getBucketId());
 
         // Calculate bucket processing stats
         long bucketDataSize = 0;
@@ -462,8 +519,12 @@ public class PaimonIngestor extends AbstractIngestor {
   /** Atomic processing of all splits in a bucket with ordering guarantees. */
   private void processBucketAtomically(BucketWork bucketWork, int workerId, int attempt)
       throws Exception {
-    LOGGER.debug(
-        "Worker {} processing bucket {} attempt {}", workerId, bucketWork.getBucketId(), attempt);
+    LOGGER.info(
+        "Worker {} starting bucket {} processing (checkpoint {}, attempt {})",
+        workerId,
+        bucketWork.getBucketId(),
+        bucketWork.getBatch().getPaimonCheckpointId(),
+        attempt);
 
     // Create PaimonRowProcessor for this bucket - handles ordering and batching
     String indexName = paimonConfig.getTargetIndexName();
@@ -472,8 +533,16 @@ public class PaimonIngestor extends AbstractIngestor {
             indexName, this::ensureIdFieldInitialized, converter, this, table.rowType());
 
     // Process each split sequentially to maintain ordering
+    int splitNum = 0;
     for (Split split : bucketWork.getSplits()) {
-      LOGGER.debug("Worker {} processing split: {}", workerId, split);
+      splitNum++;
+      LOGGER.info(
+          "Worker {} processing split {}/{} for bucket {} (checkpoint {})",
+          workerId,
+          splitNum,
+          bucketWork.getSplits().size(),
+          bucketWork.getBucketId(),
+          bucketWork.getBatch().getPaimonCheckpointId());
 
       try (RecordReader<InternalRow> reader = tableRead.createReader(split)) {
         LOGGER.debug(

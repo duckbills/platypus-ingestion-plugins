@@ -222,10 +222,10 @@ public class NewIngestorE2ETest extends NrtsearchTest {
 E2E tests use Testcontainers and can be debugged:
 ```bash
 # Enable test container logging
-TESTCONTAINERS_REUSE_ENABLE=true ./gradlew :kafka-plugin:e2eTest --info
+TESTCONTAINERS_REUSE_ENABLE=true ./gradlew :nrtsearch-plugin-kafka:e2eTest --info
 
 # Keep containers running for manual inspection
-./gradlew :kafka-plugin:e2eTest -Dtestcontainers.reuse.enable=true
+./gradlew :nrtsearch-plugin-kafka:e2eTest -Dtestcontainers.reuse.enable=true
 ```
 
 #### Building Plugin Distributions
@@ -272,7 +272,7 @@ ls -la ~/.rd/docker.sock
 #### Plugin Loading Failures
 ```bash
 # Verify plugin ZIP structure
-unzip -l build/distributions/kafka-plugin-0.1.0-SNAPSHOT.zip
+unzip -l build/distributions/nrtsearch-plugin-kafka-0.1.0-SNAPSHOT.zip
 
 # Check NRTSearch server logs for ClassNotFoundException or plugin errors
 tail -f nrtsearch-server.log | grep -i plugin

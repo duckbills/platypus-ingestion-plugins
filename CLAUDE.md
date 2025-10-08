@@ -41,14 +41,16 @@ Plugins implement the nrtSearch ingestion framework interfaces:
 ### Plugin-Specific Commands
 ```bash
 # Kafka Plugin
-./gradlew :kafka-plugin:build
-./gradlew :kafka-plugin:e2eTest
-./gradlew :kafka-plugin:distTar  # Create plugin distribution
+./gradlew :nrtsearch-plugin-kafka:build
+./gradlew :nrtsearch-plugin-kafka:test
+./gradlew :nrtsearch-plugin-kafka:e2eTest
+./gradlew :nrtsearch-plugin-kafka:distTar  # Create plugin distribution
 
 # Paimon Plugin
-./gradlew :paimon-plugin:build
-./gradlew :paimon-plugin:test
-./gradlew :paimon-plugin:distTar  # Create plugin distribution
+./gradlew :nrtsearch-plugin-paimon:build
+./gradlew :nrtsearch-plugin-paimon:test
+./gradlew :nrtsearch-plugin-paimon:e2eTest  # E2E tests (planned)
+./gradlew :nrtsearch-plugin-paimon:distTar  # Create plugin distribution
 ```
 
 ### Code Quality
@@ -228,12 +230,12 @@ E2E tests will require:
 ### Plugin Distribution
 ```bash
 # Kafka Plugin
-./gradlew :kafka-plugin:distTar
-# Creates: kafka-plugin/build/distributions/kafka-plugin-0.1.0-SNAPSHOT.tar
+./gradlew :nrtsearch-plugin-kafka:distTar
+# Creates: nrtsearch-plugin-kafka/build/distributions/nrtsearch-plugin-kafka-0.1.0-SNAPSHOT.tar
 
 # Paimon Plugin
-./gradlew :paimon-plugin:distTar
-# Creates: paimon-plugin/build/distributions/paimon-plugin-0.1.0-SNAPSHOT.tar
+./gradlew :nrtsearch-plugin-paimon:distTar
+# Creates: nrtsearch-plugin-paimon/build/distributions/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.tar
 ```
 
 ### Debugging

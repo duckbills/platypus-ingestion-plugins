@@ -506,10 +506,10 @@ See [TODO.md](TODO.md) for current development items and planned improvements.
 
 ```bash
 # Build the plugin
-./gradlew :paimon-plugin:build
+./gradlew :nrtsearch-plugin-paimon:build
 
 # Run tests
-./gradlew :paimon-plugin:test
+./gradlew :nrtsearch-plugin-paimon:test
 ```
 
 ## Dependencies

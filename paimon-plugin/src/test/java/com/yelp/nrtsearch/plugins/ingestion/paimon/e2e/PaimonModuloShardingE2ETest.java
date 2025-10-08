@@ -50,7 +50,8 @@ public class PaimonModuloShardingE2ETest extends com.yelp.nrtsearch.test_utils.N
   static final int MAX_SHARDS = 5; // Use 5 shards for testing
   static final int SHARD_ID = 2; // This service will process shard 2
 
-  private static final String PLUGIN_S3_KEY = "nrtsearch/plugins/paimon-plugin-0.1.0-SNAPSHOT.zip";
+  private static final String PLUGIN_S3_KEY =
+      "nrtsearch/plugins/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.zip";
   private static TemporaryFolder tempWarehouse;
   private static String warehousePath;
   private static Catalog catalog;
@@ -64,7 +65,8 @@ public class PaimonModuloShardingE2ETest extends com.yelp.nrtsearch.test_utils.N
     buildPluginDistribution();
 
     String projectRoot = System.getProperty("user.dir");
-    String pluginZipPath = projectRoot + "/build/distributions/paimon-plugin-0.1.0-SNAPSHOT.zip";
+    String pluginZipPath =
+        projectRoot + "/build/distributions/nrtsearch-plugin-paimon-0.1.0-SNAPSHOT.zip";
 
     getS3Client().putObject(getS3BucketName(), PLUGIN_S3_KEY, new java.io.File(pluginZipPath));
   }
@@ -77,7 +79,7 @@ public class PaimonModuloShardingE2ETest extends com.yelp.nrtsearch.test_utils.N
 
   private static void buildPluginDistribution() throws Exception {
     String projectRoot = System.getProperty("user.dir");
-    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":paimon-plugin:distZip");
+    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":nrtsearch-plugin-paimon:distZip");
     pb.directory(new java.io.File(projectRoot).getParentFile());
     pb.inheritIO();
     Process process = pb.start();

@@ -47,7 +47,8 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
     super();
   }
 
-  private static final String PLUGIN_S3_KEY = "nrtsearch/plugins/kafka-plugin-0.1.0-SNAPSHOT.zip";
+  private static final String PLUGIN_S3_KEY =
+      "nrtsearch/plugins/nrtsearch-plugin-kafka-0.1.0-SNAPSHOT.zip";
 
   @BeforeClass
   public static void addPluginToS3() throws Exception {
@@ -56,7 +57,8 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
 
     // Upload the plugin zip to S3
     String projectRoot = System.getProperty("user.dir");
-    String pluginZipPath = projectRoot + "/build/distributions/kafka-plugin-0.1.0-SNAPSHOT.zip";
+    String pluginZipPath =
+        projectRoot + "/build/distributions/nrtsearch-plugin-kafka-0.1.0-SNAPSHOT.zip";
 
     getS3Client().putObject(getS3BucketName(), PLUGIN_S3_KEY, new java.io.File(pluginZipPath));
   }
@@ -99,7 +101,7 @@ public class KafkaIngestorE2ETest extends com.yelp.nrtsearch.test_utils.Nrtsearc
 
   private static void buildPluginDistribution() throws Exception {
     String projectRoot = System.getProperty("user.dir");
-    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":kafka-plugin:distZip");
+    ProcessBuilder pb = new ProcessBuilder("./gradlew", ":nrtsearch-plugin-kafka:distZip");
     pb.directory(
         new java.io.File(projectRoot).getParentFile()); // Go up to nrtsearch-ingestion-plugins
     pb.inheritIO(); // Show build output

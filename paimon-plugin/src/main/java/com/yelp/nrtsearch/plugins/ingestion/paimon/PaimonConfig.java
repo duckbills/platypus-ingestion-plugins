@@ -33,6 +33,7 @@ public class PaimonConfig {
   private static final long DEFAULT_POLL_TIMEOUT_MS = 1000L;
   private static final long DEFAULT_SCAN_INTERVAL_MS = 30000L; // 30 seconds
   private static final int DEFAULT_QUEUE_CAPACITY = 10000;
+  private static final long DEFAULT_CHECKPOINT_TIMEOUT_MINUTES = 10L; // 10 minutes
 
   // Paimon table configuration
   private final String databaseName;
@@ -47,6 +48,7 @@ public class PaimonConfig {
   private final long pollTimeoutMs;
   private final long scanIntervalMs;
   private final int queueCapacity;
+  private final long checkpointTimeoutMinutes;
 
   // Field mapping configuration
   private final Map<String, String> fieldMapping;
@@ -71,6 +73,8 @@ public class PaimonConfig {
     this.pollTimeoutMs = getOptionalLong(config, "poll.timeout.ms", DEFAULT_POLL_TIMEOUT_MS);
     this.scanIntervalMs = getOptionalLong(config, "scan.interval.ms", DEFAULT_SCAN_INTERVAL_MS);
     this.queueCapacity = getOptionalInt(config, "queue.capacity", DEFAULT_QUEUE_CAPACITY);
+    this.checkpointTimeoutMinutes =
+        getOptionalLong(config, "checkpoint.timeout.minutes", DEFAULT_CHECKPOINT_TIMEOUT_MINUTES);
 
     // Field mapping (optional)
     @SuppressWarnings("unchecked")
@@ -192,6 +196,10 @@ public class PaimonConfig {
 
   public int getQueueCapacity() {
     return queueCapacity;
+  }
+
+  public long getCheckpointTimeoutMinutes() {
+    return checkpointTimeoutMinutes;
   }
 
   public Map<String, String> getFieldMapping() {

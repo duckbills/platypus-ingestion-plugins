@@ -14,7 +14,7 @@ Configure the Kafka plugin in your NRTSearch server configuration:
 
 ```yaml
 plugins:
-  - "s3://your-bucket/nrtsearch/plugins/kafka-plugin-0.1.0-SNAPSHOT.zip"
+  - "s3://your-bucket/nrtsearch/plugins/nrtsearch-plugin-kafka-0.1.0-SNAPSHOT.zip"
 
 pluginConfigs:
   ingestion:
@@ -108,16 +108,16 @@ curl http://localhost:8081/subjects/your-topic-value/versions/latest
 
 ```bash
 # Build the plugin
-./gradlew :kafka-plugin:build
+./gradlew :nrtsearch-plugin-kafka:build
 
 # Run tests
-./gradlew :kafka-plugin:test
+./gradlew :nrtsearch-plugin-kafka:test
 
 # Run E2E tests
-./gradlew :kafka-plugin:e2eTest
+./gradlew :nrtsearch-plugin-kafka:e2eTest
 
 # Build plugin distribution
-./gradlew :kafka-plugin:distZip
+./gradlew :nrtsearch-plugin-kafka:distZip
 ```
 
 ## Dependencies

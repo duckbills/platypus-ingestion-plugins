@@ -45,8 +45,9 @@ public class InFlightBatchTest {
         "Expected completions should match constructor", 1, batch.getExpectedCompletions());
     assertEquals("Should start with full count", 1, batch.getRemainingCount());
 
-    // Simulate worker completing
-    batch.markBucketComplete();
+    // Simulate worker completing bucket 0
+    batch.registerBucket(0);
+    batch.markBucketComplete(0);
 
     assertEquals("Should have zero remaining after completion", 0, batch.getRemainingCount());
   }
@@ -61,6 +62,11 @@ public class InFlightBatchTest {
     CountDownLatch workerStartLatch = new CountDownLatch(WORKER_COUNT);
     AtomicInteger completedWorkers = new AtomicInteger(0);
 
+    // Register all buckets
+    for (int i = 0; i < WORKER_COUNT; i++) {
+      batch.registerBucket(i);
+    }
+
     // Start multiple workers that complete at different times
     for (int i = 0; i < WORKER_COUNT; i++) {
       final int workerId = i;
@@ -70,7 +76,7 @@ public class InFlightBatchTest {
               workerStartLatch.countDown();
               // Stagger completion times to test race conditions
               Thread.sleep(workerId * 10);
-              batch.markBucketComplete();
+              batch.markBucketComplete(workerId);
               completedWorkers.incrementAndGet();
             } catch (InterruptedException e) {
               Thread.currentThread().interrupt();
@@ -97,17 +103,21 @@ public class InFlightBatchTest {
     InFlightBatch batch = new InFlightBatch(99999L, 2);
     ExecutorService workers = Executors.newFixedThreadPool(2);
 
+    // Register buckets
+    batch.registerBucket(0);
+    batch.registerBucket(1);
+
     // Start one fast worker and one slow worker
     workers.submit(
         () -> {
-          batch.markBucketComplete(); // Fast worker completes immediately
+          batch.markBucketComplete(0); // Fast worker completes bucket 0 immediately
         });
 
     workers.submit(
         () -> {
           try {
             Thread.sleep(5000); // Slow worker takes 5 seconds (too long)
-            batch.markBucketComplete();
+            batch.markBucketComplete(1);
           } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
           }
@@ -132,13 +142,19 @@ public class InFlightBatchTest {
     CountDownLatch simultaneousStart = new CountDownLatch(1);
     AtomicInteger racingCompletions = new AtomicInteger(0);
 
+    // Register all buckets
+    for (int i = 0; i < CONCURRENT_WORKERS; i++) {
+      batch.registerBucket(i);
+    }
+
     // Create many workers that all complete simultaneously
     for (int i = 0; i < CONCURRENT_WORKERS; i++) {
+      final int bucketId = i;
       workers.submit(
           () -> {
             try {
               simultaneousStart.await(); // Wait for signal to start simultaneously
-              batch.markBucketComplete();
+              batch.markBucketComplete(bucketId);
               racingCompletions.incrementAndGet();
             } catch (InterruptedException e) {
               Thread.currentThread().interrupt();
@@ -211,13 +227,18 @@ public class InFlightBatchTest {
     // This simulates the "safe halt" behavior mentioned in PaimonIngestor
     InFlightBatch batch = new InFlightBatch(88888L, 3);
 
+    // Register 3 buckets
+    batch.registerBucket(0);
+    batch.registerBucket(1);
+    batch.registerBucket(2);
+
     // Two workers complete successfully
-    batch.markBucketComplete();
-    batch.markBucketComplete();
+    batch.markBucketComplete(0);
+    batch.markBucketComplete(1);
 
     assertEquals("One worker should still be pending", 1, batch.getRemainingCount());
 
-    // Third worker crashes/fails - never calls markBucketComplete()
+    // Third worker (bucket 2) crashes/fails - never calls markBucketComplete()
     // Coordinator should timeout (not wait forever)
     boolean completed = batch.awaitCompletion(100, TimeUnit.MILLISECONDS);
 
@@ -230,16 +251,20 @@ public class InFlightBatchTest {
     // SCENARIO: Worker accidentally calls markBucketComplete() twice - should handle gracefully
     InFlightBatch batch = new InFlightBatch(22222L, 2);
 
+    // Register 2 buckets
+    batch.registerBucket(0);
+    batch.registerBucket(1);
+
     // First worker completes normally
-    batch.markBucketComplete();
+    batch.markBucketComplete(0);
     assertEquals("Should have one remaining", 1, batch.getRemainingCount());
 
     // Second worker completes normally
-    batch.markBucketComplete();
+    batch.markBucketComplete(1);
     assertEquals("Should have zero remaining", 0, batch.getRemainingCount());
 
-    // Buggy worker calls markBucketComplete() again - should not go negative
-    batch.markBucketComplete();
+    // Buggy worker calls markBucketComplete() again for bucket 0 - should not go negative
+    batch.markBucketComplete(0);
     assertEquals("Count should not go below zero", 0, batch.getRemainingCount());
   }
 
@@ -251,9 +276,12 @@ public class InFlightBatchTest {
 
     assertEquals("Should handle large counts", LARGE_BUCKET_COUNT, batch.getRemainingCount());
 
-    // Complete all work
+    // Register and complete all work
     for (int i = 0; i < LARGE_BUCKET_COUNT; i++) {
-      batch.markBucketComplete();
+      batch.registerBucket(i);
+    }
+    for (int i = 0; i < LARGE_BUCKET_COUNT; i++) {
+      batch.markBucketComplete(i);
     }
 
     assertEquals("Should handle large completion counts", 0, batch.getRemainingCount());
