@@ -27,7 +27,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -112,10 +111,20 @@ public class PaimonIngestor extends AbstractIngestor {
         // Start worker threads with explicit names
         for (int i = 0; i < paimonConfig.getWorkerThreads(); i++) {
           final int workerId = i;
-          executorService.submit(
+          executorService.execute(
               () -> {
                 Thread.currentThread().setName("paimon-worker-" + workerId);
-                workerLoop(workerId);
+                try {
+                  workerLoop(workerId);
+                } catch (Throwable t) {
+                  LOGGER.error(
+                      "FATAL: Worker {} thread died with {}: {}. "
+                          + "This may cause coordinator timeout if bucket was being processed.",
+                      workerId,
+                      t.getClass().getSimpleName(),
+                      t.getMessage(),
+                      t);
+                }
               });
         }
 
@@ -320,73 +329,43 @@ public class PaimonIngestor extends AbstractIngestor {
               String.format("%.2f", totalSplitSize / (1024.0 * 1024.0)),
               nextSnapshot);
 
-          // PHASE 3: AWAIT COMPLETION - Critical synchronization point with periodic timeout checks
-          // Periodically checks progress and logs diagnostics if checkpoint takes too long
+          // PHASE 3: AWAIT COMPLETION - Wait with single timeout
           long batchStartTime = System.currentTimeMillis();
           long timeoutMinutes = paimonConfig.getCheckpointTimeoutMinutes();
-          boolean completed = false;
-          int progressCheckCount = 0;
-
-          while (!completed && running.get()) {
-            completed = batch.awaitCompletion(timeoutMinutes, TimeUnit.MINUTES);
-
-            if (!completed) {
-              // TIMEOUT: Log detailed diagnostics about stuck checkpoint and continue waiting
-              progressCheckCount++;
-              long elapsedMinutes = (System.currentTimeMillis() - batchStartTime) / 60000;
-              Set<Integer> pendingBuckets = batch.getPendingBuckets();
-              Set<Integer> completedBuckets = batch.getCompletedBuckets();
-              long remainingCount = batch.getRemainingCount();
-
-              LOGGER.warn(
-                  "CHECKPOINT PROGRESS CHECK #{}: Checkpoint {} is still in progress after {} minutes total elapsed time. "
-                      + "Progress: {}/{} buckets completed. "
-                      + "Pending bucket IDs: {} "
-                      + "Completed bucket IDs: {} "
-                      + "Remaining latch count: {}. "
-                      + "Work queue size: {}, capacity: {}, remaining: {}. "
-                      + "Will wait another {} minutes then check again. "
-                      + "ACTION: Check worker thread logs for pending buckets to diagnose what is blocking them.",
-                  progressCheckCount,
-                  nextSnapshot,
-                  elapsedMinutes,
-                  completedBuckets.size(),
-                  splitsByBucket.size(),
-                  pendingBuckets,
-                  completedBuckets,
-                  remainingCount,
-                  workQueue.size(),
-                  paimonConfig.getQueueCapacity(),
-                  workQueue.remainingCapacity(),
-                  timeoutMinutes);
-
-              // Continue waiting - will retry indefinitely until success or shutdown
-            }
-          }
-
-          if (!completed) {
-            // Only happens if running.get() == false (shutdown requested during wait)
-            LOGGER.warn(
-                "Coordinator shutting down while checkpoint {} was in progress. Checkpoint will NOT be committed.",
-                nextSnapshot);
-            break; // Exit coordinator loop
-          }
-
-          long batchDuration = System.currentTimeMillis() - batchStartTime;
 
           LOGGER.info(
-              "All workers completed checkpoint {} in {}s - {} buckets processed",
-              nextSnapshot,
-              String.format("%.1f", batchDuration / 1000.0),
-              splitsByBucket.size());
+              "Waiting for {} buckets to complete (timeout {} minutes)...",
+              splitsByBucket.size(),
+              timeoutMinutes);
 
-          // PHASE 4: COMMIT CHECKPOINT - Only happens after all work is done
-          streamTableScan.notifyCheckpointComplete(nextSnapshot);
+          boolean completed = batch.awaitCompletion(timeoutMinutes, TimeUnit.MINUTES);
 
-          LOGGER.info(
-              "Committed Paimon checkpoint {} - total processing time: {}s",
-              nextSnapshot,
-              String.format("%.1f", (System.currentTimeMillis() - batchStartTime) / 1000.0));
+          // PHASE 4: COMMIT CHECKPOINT - Only if all buckets completed successfully
+          if (completed) {
+            long durationSec = (System.currentTimeMillis() - batchStartTime) / 1000;
+            LOGGER.info(
+                "All workers completed checkpoint {} in {}s - {} buckets processed",
+                nextSnapshot,
+                durationSec,
+                splitsByBucket.size());
+
+            streamTableScan.notifyCheckpointComplete(nextSnapshot);
+            LOGGER.info("Committed Paimon checkpoint {}", nextSnapshot);
+          } else {
+            // Timeout or shutdown - DON'T commit checkpoint
+            long elapsedMin = (System.currentTimeMillis() - batchStartTime) / 60000;
+            LOGGER.error(
+                "Checkpoint {} FAILED after {} minutes. "
+                    + "Progress: {}/{} buckets completed. Pending buckets: {}. "
+                    + "Checkpoint will NOT be committed and will retry on next scan. "
+                    + "This may indicate worker thread crash or stuck processing.",
+                nextSnapshot,
+                elapsedMin,
+                batch.getCompletedBuckets().size(),
+                splitsByBucket.size(),
+                batch.getPendingBuckets());
+            // Don't call notifyCheckpointComplete - Paimon will re-deliver data on next scan
+          }
         }
 
         // Sleep before next scan
@@ -447,73 +426,87 @@ public class PaimonIngestor extends AbstractIngestor {
     int attempt = 1;
     long backoffMs = 100; // Start with 100ms for faster retries during index initialization
 
-    while (running.get()) {
-      try {
-        processBucketAtomically(bucketWork, workerId, attempt);
+    try {
+      while (running.get()) {
+        try {
+          processBucketAtomically(bucketWork, workerId, attempt);
 
-        // SUCCESS: Signal completion and exit
-        bucketWork.getBatch().markBucketComplete(bucketWork.getBucketId());
+          // SUCCESS: Signal completion and exit
+          bucketWork.getBatch().markBucketComplete(bucketWork.getBucketId());
 
-        // Calculate bucket processing stats
-        long bucketDataSize = 0;
-        int totalDocuments = 0;
-        for (Split split : bucketWork.getSplits()) {
-          if (split instanceof DataSplit) {
-            DataSplit dataSplit = (DataSplit) split;
-            bucketDataSize +=
-                dataSplit.dataFiles().stream().mapToLong(file -> file.fileSize()).sum();
-            totalDocuments += dataSplit.rowCount();
+          // Calculate bucket processing stats
+          long bucketDataSize = 0;
+          int totalDocuments = 0;
+          for (Split split : bucketWork.getSplits()) {
+            if (split instanceof DataSplit) {
+              DataSplit dataSplit = (DataSplit) split;
+              bucketDataSize +=
+                  dataSplit.dataFiles().stream().mapToLong(file -> file.fileSize()).sum();
+              totalDocuments += dataSplit.rowCount();
+            }
           }
-        }
 
-        if (attempt == 1) {
-          LOGGER.info(
-              "Worker {} completed bucket {} - {} splits, {} MB, ~{} docs",
+          if (attempt == 1) {
+            LOGGER.info(
+                "Worker {} completed bucket {} - {} splits, {} MB, ~{} docs",
+                workerId,
+                bucketWork.getBucketId(),
+                bucketWork.getSplits().size(),
+                String.format("%.2f", bucketDataSize / (1024.0 * 1024.0)),
+                totalDocuments);
+          } else {
+            LOGGER.info(
+                "Worker {} completed bucket {} after {} attempts - {} splits, {} MB, ~{} docs",
+                workerId,
+                bucketWork.getBucketId(),
+                attempt,
+                bucketWork.getSplits().size(),
+                String.format("%.2f", bucketDataSize / (1024.0 * 1024.0)),
+                totalDocuments);
+          }
+          return;
+
+        } catch (Exception e) {
+          // ALL exceptions are treated as transient - log and retry with backoff
+          LOGGER.warn(
+              "Worker {} attempt {} failed for bucket {} (next backoff: {}ms): {}",
               workerId,
+              attempt,
               bucketWork.getBucketId(),
-              bucketWork.getSplits().size(),
-              String.format("%.2f", bucketDataSize / (1024.0 * 1024.0)),
-              totalDocuments);
-        } else {
-          LOGGER.info(
-              "Worker {} completed bucket {} after {} attempts - {} splits, {} MB, ~{} docs",
-              workerId,
+              backoffMs,
+              e.getMessage());
+          LOGGER.debug(
+              "Full exception stack trace for bucket {} attempt {}:",
               bucketWork.getBucketId(),
               attempt,
-              bucketWork.getSplits().size(),
-              String.format("%.2f", bucketDataSize / (1024.0 * 1024.0)),
-              totalDocuments);
+              e);
+
+          // Sleep with exponential backoff (capped at 1 minute)
+          sleepWithBackoff(backoffMs);
+          backoffMs = Math.min(backoffMs * 2, 60000);
+          attempt++;
         }
-        return;
-
-      } catch (Exception e) {
-        // ALL exceptions are treated as transient - log and retry with backoff
-        LOGGER.warn(
-            "Worker {} attempt {} failed for bucket {} (next backoff: {}ms): {}",
-            workerId,
-            attempt,
-            bucketWork.getBucketId(),
-            backoffMs,
-            e.getMessage());
-        LOGGER.debug(
-            "Full exception stack trace for bucket {} attempt {}:",
-            bucketWork.getBucketId(),
-            attempt,
-            e);
-
-        // Sleep with exponential backoff (capped at 1 minute)
-        sleepWithBackoff(backoffMs);
-        backoffMs = Math.min(backoffMs * 2, 60000);
-        attempt++;
       }
-    }
 
-    // Only exit if shutdown was requested
-    LOGGER.info(
-        "Worker {} stopped processing bucket {} due to shutdown after {} attempts",
-        workerId,
-        bucketWork.getBucketId(),
-        attempt - 1);
+      // Shutdown case - exit without marking complete
+      LOGGER.warn(
+          "Worker {} stopped due to shutdown while processing bucket {}. "
+              + "Bucket NOT marked complete - coordinator will timeout and retry.",
+          workerId,
+          bucketWork.getBucketId());
+
+    } catch (Throwable t) {
+      // FATAL: OOM, StackOverflow, LinkageError, etc.
+      // Thread will die - DON'T mark complete, let coordinator timeout and retry
+      LOGGER.error(
+          "FATAL: Worker {} crashed with {} while processing bucket {}! "
+              + "Bucket NOT marked complete - coordinator will timeout and retry entire checkpoint.",
+          workerId,
+          t.getClass().getSimpleName(),
+          bucketWork.getBucketId(),
+          t);
+      // Don't call markBucketComplete - coordinator will timeout and retry
+    }
   }
 
   /** Atomic processing of all splits in a bucket with ordering guarantees. */
