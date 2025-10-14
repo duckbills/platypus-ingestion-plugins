@@ -1,0 +1,10 @@
+---
+# See http://y/jenkinsfile for more information
+# about customizing your Jenkins pipeline.
+type: gradle
+host:
+  os_release: jammy
+  min_cpu: 1
+  min_memory: 2
+  max_cpu: 8
+  max_memory: 16
