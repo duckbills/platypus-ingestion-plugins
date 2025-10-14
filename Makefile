@@ -38,7 +38,7 @@ build:
 test:
 	JAVA_HOME="$(JAVA_HOME)" ./gradlew test
 
-e2etest:
+itest:
 	JAVA_HOME="$(JAVA_HOME)" ./gradlew e2eTest
 
 # Build distribution zips
