@@ -16,7 +16,7 @@ PAIMON_ARTIFACT_FILE_PATH := paimon-plugin/build/distributions/nrtsearch-plugin-
 # S3_NOVA_BUCKET := (from .env)
 
 # Java configuration (with fallback)
-DEFAULT_JAVA := /opt/homebrew/Cellar/openjdk@21/21.0.6/libexec/openjdk.jdk/Contents/Home
+DEFAULT_JAVA := /usr/lib/jvm/java-21-amazon-corretto
 ifneq ($(JAVA_HOME_OVERRIDE),)
     export JAVA_HOME := $(JAVA_HOME_OVERRIDE)
 else ifneq ($(wildcard $(DEFAULT_JAVA)),)
