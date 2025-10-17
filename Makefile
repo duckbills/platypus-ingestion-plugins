@@ -39,7 +39,7 @@ test:
 	JAVA_HOME="$(JAVA_HOME)" ./gradlew test
 
 itest:
-	JAVA_HOME="$(JAVA_HOME)" ./gradlew e2eTest
+	JAVA_HOME="$(JAVA_HOME)" ./gradlew nrtsearch-plugin-paimon:e2eTest
 
 # Build distribution zips
 dist:
